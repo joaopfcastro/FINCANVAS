@@ -939,8 +939,8 @@ Retorne obrigatoriamente um array JSON correspondendo a cada 'pluggyId' recebido
               source: tx.source
             };
           });
-        } catch (aiError) {
-          console.error("[Pluggy Sync Gemini Mapping error]:", aiError);
+        } catch (aiError: any) {
+          console.warn("[Pluggy Sync Gemini Mapping error - Active robust heuristic fallback in use due to rate/spending limit]:", aiError?.message || aiError);
           // Fallback heurístico total
           categorizedList = rawTransactionsBatch.map(tx => {
             const dl = tx.desc.toLowerCase();

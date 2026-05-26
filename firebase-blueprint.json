@@ -29,6 +29,7 @@
         "darkMode": { "type": "boolean" },
         "phone": { "type": "string" },
         "pluggyClientId": { "type": "string" },
+        "pluggyClientSecret": { "type": "string" },
         "pluggyItemIds": { "type": "array", "items": { "type": "string" } },
         "createdAt": { "type": "timestamp" },
         "updatedAt": { "type": "timestamp" }
