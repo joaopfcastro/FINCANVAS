@@ -4,6 +4,11 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { PluggyService } from "./src/lib/pluggyService";
+import { 
+  normalizeInstitutionName, 
+  classifyPluggyDirection, 
+  cleanDescriptionLocally 
+} from "./src/lib/pluggyNormalizer";
 
 dotenv.config();
 
@@ -832,28 +837,6 @@ async function startServer() {
       if (!ai) {
         console.warn("[AIS DEV fallback] Sem API do Gemini configurada. Sincronizando com inteligência local heurística.");
         categorizedList = rawTransactionsBatch.map(tx => {
-          const dl = tx.desc.toLowerCase();
-          let cat = "Outros";
-          let type = tx.amount < 0 ? "Despesa" : "Receita";
-          let cleanDesc = tx.desc;
-
-          if (dl.includes("ifood") || dl.includes("restaurante") || dl.includes("padaria") || dl.includes("alimentacao")) {
-            cat = userCategories.includes("Alimentação") ? "Alimentação" : userCategories[0];
-            cleanDesc = "iFood / Alimentação";
-          } else if (dl.includes("uber") || dl.includes("posto") || dl.includes("99app") || dl.includes("combustivel")) {
-            cat = userCategories.includes("Transporte") ? "Transporte" : (userCategories[1] || userCategories[0]);
-            cleanDesc = dl.includes("uber") ? "Uber" : "Combustível";
-          } else if (dl.includes("mercado") || dl.includes("carrefour") || dl.includes("pao de acucar")) {
-            cat = userCategories.includes("Alimentação") ? "Alimentação" : userCategories[0];
-            cleanDesc = "Supermercado";
-          } else if (dl.includes("salario") || dl.includes("recebimento") || dl.includes("pix recebido")) {
-            cat = userCategories.includes("Salário") ? "Salário" : "Salário / Pix";
-            cleanDesc = "Pix Recebido";
-          } else if (dl.includes("amazon") || dl.includes("shopee") || dl.includes("mercado livre")) {
-            cat = userCategories.includes("Compras Online") ? "Compras Online" : (userCategories[8] || userCategories[0]);
-            cleanDesc = "Compras Online";
-          }
-
           let dateStr = "";
           try {
             const d = new Date(tx.date);
@@ -865,27 +848,68 @@ async function startServer() {
             dateStr = tx.date;
           }
 
+          const dl = tx.desc.toLowerCase();
+          let cat = "Outros";
+
+          if (dl.includes("ifood") || dl.includes("restaurante") || dl.includes("padaria") || dl.includes("alimentacao")) {
+            cat = userCategories.includes("Alimentação") ? "Alimentação" : userCategories[0];
+          } else if (dl.includes("uber") || dl.includes("posto") || dl.includes("99app") || dl.includes("combustivel")) {
+            cat = userCategories.includes("Transporte") ? "Transporte" : (userCategories[1] || userCategories[0]);
+          } else if (dl.includes("mercado") || dl.includes("carrefour") || dl.includes("pao de acucar")) {
+            cat = userCategories.includes("Alimentação") ? "Alimentação" : userCategories[0];
+          } else if (dl.includes("salario") || dl.includes("recebimento") || dl.includes("pix recebido") || dl.includes("rendimento")) {
+            cat = userCategories.includes("Salário") ? "Salário" : "Salário";
+          } else if (dl.includes("amazon") || dl.includes("shopee") || dl.includes("mercado livre")) {
+            cat = userCategories.includes("Compras Online") ? "Compras Online" : (userCategories[8] || userCategories[0]);
+          }
+
           return {
             pluggyId: tx.pluggyId,
             date: dateStr,
-            desc: cleanDesc,
+            desc: cleanDescriptionLocally(tx.desc),
             cat,
-            type,
-            amount: Math.abs(tx.amount),
-            source: tx.source
+            type: tx.detectedDirection,
+            amount: tx.amount,
+            source: tx.source,
+            rawAmount: tx.rawAmount,
+            sourceRaw: tx.sourceRaw,
+            bankRawName: tx.bankRawName,
+            accountLabel: tx.accountLabel,
+            accountId: tx.accountId,
+            itemId: tx.itemId,
+            pluggyType: tx.pluggyType,
+            accountType: tx.accountType,
+            accountSubtype: tx.accountSubtype,
+            operationType: tx.operationType,
+            paymentData: tx.paymentData,
+            merchant: tx.merchantName,
+            detectedDirection: tx.detectedDirection,
+            directionConfidence: tx.directionConfidence,
+            directionReason: tx.directionReason,
+            isLikelyInternalTransfer: tx.isLikelyInternalTransfer,
+            shouldIgnoreInTotals: tx.shouldIgnoreInTotals
           };
         });
       } else {
         const promptSystem = `Você é um excelente assistente financeiro de elite brasileiro. Informamos que as transações obtidas via API Bancária crua precisam ser tratadas e mapeadas para as seguintes categorias válidas: ${JSON.stringify(userCategories)}.
-Decida inteligentemente para cada transação:
-1. 'cat': A categoria correspondente ou 'Outros' (deve ser idêntica a uma das categorias válidas fornecidas).
-2. 'type': Se for entrada de saldo (valor positivo), responda 'Receita'. Se for saída de saldo (valor negativo), responda 'Despesa'.
-3. 'desc': Corrija a descrição para termos curtos, limpos e esteticamente agradáveis (Ex: "UBER *TRIP BR_HELP" vira "Uber").
+Você NÃO PODE de forma alguma alterar o tipo da transação ou direção financeira. A direção financeira já foi calculada heuristicamente de forma correta e está informada no campo 'detectedDirection' (valores 'Receita' ou 'Despesa').
 
-Dados brutos das transações:
-${JSON.stringify(rawTransactionsBatch, null, 2)}
+Sua tarefa para cada transação:
+1. 'cat': Escolha a categoria correspondente de dentro da lista de categorias válidas ou 'Outros'.
+2. 'desc': Corrija a descrição para termos amigáveis, curtos e limpos (Ex: "UBER *TRIP BR_HELP" vira "Uber", "IFOOD *RESTAURANTE SAO J" vira "iFood").
 
-Retorne obrigatoriamente um array JSON correspondendo a cada 'pluggyId' recebido na lista. Formato: [{ "pluggyId": "...", "cat": "...", "type": "Despesa" ou "Receita", "desc": "..." }]. Nenhuma outra informação deve ser fornecida.`;
+Dados brutos estruturados das transações:
+${JSON.stringify(rawTransactionsBatch.map(tx => ({
+  pluggyId: tx.pluggyId,
+  description: tx.desc,
+  originalCategory: tx.originalCategory,
+  merchantName: tx.merchantName,
+  detectedDirection: tx.detectedDirection,
+  amount: tx.amount,
+  rawAmount: tx.rawAmount
+})), null, 2)}
+
+Retorne obrigatoriamente um array JSON correspondendo a cada 'pluggyId' recebido na lista. Formato: [{ "pluggyId": "...", "cat": "...", "desc": "..." }]. Nenhuma outra informação deve ser fornecida.`;
 
         try {
           const result = await ai.models.generateContent({
@@ -900,10 +924,9 @@ Retorne obrigatoriamente um array JSON correspondendo a cada 'pluggyId' recebido
                   properties: {
                     pluggyId: { type: "STRING" },
                     cat: { type: "STRING" },
-                    type: { type: "STRING" },
                     desc: { type: "STRING" }
                   },
-                  required: ["pluggyId", "cat", "type", "desc"]
+                  required: ["pluggyId", "cat", "desc"]
                 }
               }
             }
@@ -932,11 +955,28 @@ Retorne obrigatoriamente um array JSON correspondendo a cada 'pluggyId' recebido
             return {
               pluggyId: tx.pluggyId,
               date: dateStr,
-              desc: decision.desc || tx.desc,
+              desc: decision.desc || cleanDescriptionLocally(tx.desc),
               cat: decision.cat || "Outros",
-              type: decision.type || (tx.amount < 0 ? "Despesa" : "Receita"),
-              amount: Math.abs(tx.amount),
-              source: tx.source
+              type: tx.detectedDirection,
+              amount: tx.amount,
+              source: tx.source,
+              rawAmount: tx.rawAmount,
+              sourceRaw: tx.sourceRaw,
+              bankRawName: tx.bankRawName,
+              accountLabel: tx.accountLabel,
+              accountId: tx.accountId,
+              itemId: tx.itemId,
+              pluggyType: tx.pluggyType,
+              accountType: tx.accountType,
+              accountSubtype: tx.accountSubtype,
+              operationType: tx.operationType,
+              paymentData: tx.paymentData,
+              merchant: tx.merchantName,
+              detectedDirection: tx.detectedDirection,
+              directionConfidence: tx.directionConfidence,
+              directionReason: tx.directionReason,
+              isLikelyInternalTransfer: tx.isLikelyInternalTransfer,
+              shouldIgnoreInTotals: tx.shouldIgnoreInTotals
             };
           });
         } catch (aiError: any) {
@@ -945,15 +985,17 @@ Retorne obrigatoriamente um array JSON correspondendo a cada 'pluggyId' recebido
           categorizedList = rawTransactionsBatch.map(tx => {
             const dl = tx.desc.toLowerCase();
             let cat = "Outros";
-            let type = tx.amount < 0 ? "Despesa" : "Receita";
-            let cleanDesc = tx.desc;
 
-            if (dl.includes("ifood") || dl.includes("restaurante")) {
+            if (dl.includes("ifood") || dl.includes("restaurante") || dl.includes("padaria") || dl.includes("alimentacao")) {
               cat = userCategories.includes("Alimentação") ? "Alimentação" : userCategories[0];
-              cleanDesc = "iFood";
-            } else if (dl.includes("uber") || dl.includes("posto")) {
-              cat = userCategories.includes("Transporte") ? "Transporte" : userCategories[1];
-              cleanDesc = dl.includes("uber") ? "Uber" : "Combustível";
+            } else if (dl.includes("uber") || dl.includes("posto") || dl.includes("99app") || dl.includes("combustivel")) {
+              cat = userCategories.includes("Transporte") ? "Transporte" : (userCategories[1] || userCategories[0]);
+            } else if (dl.includes("mercado") || dl.includes("carrefour") || dl.includes("pao de acucar")) {
+              cat = userCategories.includes("Alimentação") ? "Alimentação" : userCategories[0];
+            } else if (dl.includes("salario") || dl.includes("recebimento") || dl.includes("pix recebido") || dl.includes("rendimento")) {
+              cat = userCategories.includes("Salário") ? "Salário" : "Salário";
+            } else if (dl.includes("amazon") || dl.includes("shopee") || dl.includes("mercado livre")) {
+              cat = userCategories.includes("Compras Online") ? "Compras Online" : (userCategories[8] || userCategories[0]);
             }
 
             let dateStr = "";
@@ -970,11 +1012,28 @@ Retorne obrigatoriamente um array JSON correspondendo a cada 'pluggyId' recebido
             return {
               pluggyId: tx.pluggyId,
               date: dateStr,
-              desc: cleanDesc,
+              desc: cleanDescriptionLocally(tx.desc),
               cat,
-              type,
-              amount: Math.abs(tx.amount),
-              source: tx.source
+              type: tx.detectedDirection,
+              amount: tx.amount,
+              source: tx.source,
+              rawAmount: tx.rawAmount,
+              sourceRaw: tx.sourceRaw,
+              bankRawName: tx.bankRawName,
+              accountLabel: tx.accountLabel,
+              accountId: tx.accountId,
+              itemId: tx.itemId,
+              pluggyType: tx.pluggyType,
+              accountType: tx.accountType,
+              accountSubtype: tx.accountSubtype,
+              operationType: tx.operationType,
+              paymentData: tx.paymentData,
+              merchant: tx.merchantName,
+              detectedDirection: tx.detectedDirection,
+              directionConfidence: tx.directionConfidence,
+              directionReason: tx.directionReason,
+              isLikelyInternalTransfer: tx.isLikelyInternalTransfer,
+              shouldIgnoreInTotals: tx.shouldIgnoreInTotals
             };
           });
         }

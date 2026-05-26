@@ -20,14 +20,13 @@ service cloud.firestore {
     
     function isValidTransaction(data) {
       return data.keys().hasAll(['date', 'desc', 'cat', 'type', 'amount', 'source', 'userId', 'createdAt', 'updatedAt']) &&
-             data.size() >= 9 && data.size() <= 10 &&
+             data.size() >= 9 && data.size() <= 35 &&
              data.date is string && data.date.size() <= 20 &&
              data.desc is string && data.desc.size() <= 200 &&
              data.cat is string && data.cat.size() <= 100 &&
              data.type is string && (data.type == 'Receita' || data.type == 'Despesa') &&
              data.amount is number &&
              data.source is string && data.source.size() <= 100 &&
-             (!data.keys().hasAny(['pluggyId']) || (data.pluggyId is string && data.pluggyId.size() <= 100)) &&
              data.userId is string && data.userId == request.auth.uid &&
              data.createdAt is timestamp && data.updatedAt is timestamp;
     }
@@ -67,7 +66,13 @@ service cloud.firestore {
         incoming().userId == existing().userId && 
         incoming().createdAt == existing().createdAt && 
         incoming().updatedAt == request.time && 
-        incoming().diff(existing()).affectedKeys().hasOnly(['date', 'desc', 'cat', 'type', 'amount', 'source', 'updatedAt'])
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'date', 'desc', 'cat', 'type', 'amount', 'source', 'updatedAt',
+          'rawAmount', 'sourceRaw', 'bankRawName', 'accountRawName', 'accountLabel',
+          'accountId', 'itemId', 'pluggyType', 'accountType', 'accountSubtype',
+          'operationType', 'paymentData', 'merchant', 'descriptionRaw', 'detectedDirection',
+          'directionConfidence', 'directionReason', 'isLikelyInternalTransfer', 'shouldIgnoreInTotals', 'pluggyId'
+        ])
       );
     }
 

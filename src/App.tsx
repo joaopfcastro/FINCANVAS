@@ -44,6 +44,26 @@ export interface Transaction {
   pluggyId?: string;
   createdAt: any;
   updatedAt: any;
+  // Audit and normalized metadata:
+  rawAmount?: number;
+  sourceRaw?: string;
+  bankRawName?: string;
+  accountRawName?: string;
+  accountLabel?: string;
+  accountId?: string;
+  itemId?: string;
+  pluggyType?: string;
+  accountType?: string;
+  accountSubtype?: string;
+  operationType?: string | null;
+  paymentData?: any;
+  merchant?: string | null;
+  descriptionRaw?: string;
+  detectedDirection?: 'Receita' | 'Despesa';
+  directionConfidence?: number;
+  directionReason?: string;
+  isLikelyInternalTransfer?: boolean;
+  shouldIgnoreInTotals?: boolean;
 }
 
 type View = 'dashboard' | 'import' | 'reports' | 'settings';

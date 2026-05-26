@@ -1,12 +1,45 @@
 import { GoogleGenAI } from "@google/genai";
+import { 
+  normalizeInstitutionName, 
+  classifyPluggyDirection, 
+  buildAccountLabel 
+} from "./pluggyNormalizer";
 
 export interface PluggyTransaction {
   pluggyId: string;
+  accountId: string;
+  itemId: string;
+
   date: string;
   desc: string;
+  descriptionRaw?: string;
+
+  rawAmount: number;
   amount: number;
+
+  pluggyType?: string;
+  accountType?: string;
+  accountSubtype?: string;
+
+  operationType?: string | null;
+  originalCategory?: string | null;
+
+  merchantName?: string | null;
+  merchantBusinessName?: string | null;
+
+  bankRawName: string;
+  accountRawName: string;
+  sourceRaw: string;
   source: string;
-  originalCategory: string;
+  accountLabel?: string;
+
+  detectedDirection: "Despesa" | "Receita";
+  directionConfidence: number;
+  directionReason: string;
+
+  isLikelyInternalTransfer?: boolean;
+  shouldIgnoreInTotals?: boolean;
+  paymentData?: any;
 }
 
 export interface PluggyItem {
@@ -267,13 +300,60 @@ export class PluggyService {
           console.log(`[PluggyService Sync] Extraídas ${rawList.length} transações brutas paginadas para a conta ${account.name}`);
 
           for (const tx of rawList) {
+            const institution = normalizeInstitutionName({
+              connectorName: item.connector?.name,
+              providerName: item.provider?.name,
+              itemName: itemTitle,
+              accountName: account.name,
+              marketingName: account.marketingName,
+            });
+
+            const direction = classifyPluggyDirection({
+              amount: tx.amount,
+              pluggyType: tx.type,
+              accountType: account.type,
+              accountSubtype: account.subtype,
+              description: tx.description,
+              operationType: tx.operationType,
+              originalCategory: tx.category,
+              paymentData: tx.paymentData,
+            });
+
             results.push({
               pluggyId: tx.id,
+              accountId: account.id,
+              itemId: item.id,
+
               date: tx.date,
               desc: tx.description,
-              amount: tx.amount,
-              source: `${itemTitle} - ${account.name}`,
-              originalCategory: tx.category || "",
+              descriptionRaw: tx.descriptionRaw || tx.description,
+
+              rawAmount: tx.amount,
+              amount: direction.normalizedAmount,
+
+              pluggyType: tx.type,
+              accountType: account.type,
+              accountSubtype: account.subtype,
+
+              operationType: tx.operationType || null,
+              originalCategory: tx.category || null,
+
+              merchantName: tx.merchant?.name || null,
+              merchantBusinessName: tx.merchant?.businessName || null,
+
+              bankRawName: institution.bankRawName,
+              accountRawName: account.name,
+              sourceRaw: institution.sourceRaw,
+              source: institution.source,
+
+              accountLabel: buildAccountLabel(account),
+
+              detectedDirection: direction.detectedDirection,
+              directionConfidence: direction.confidence,
+              directionReason: direction.reason,
+
+              isLikelyInternalTransfer: direction.isLikelyInternalTransfer,
+              shouldIgnoreInTotals: direction.shouldIgnoreInTotals,
             });
           }
         } catch (txError: any) {

@@ -4,8 +4,13 @@ import { db } from '../firebase';
 import { UserProfile, Transaction } from '../App';
 import { User } from 'firebase/auth';
 import { 
+  classifyPluggyDirection, 
+  normalizeInstitutionName, 
+  cleanDescriptionLocally 
+} from '../lib/pluggyNormalizer';
+import { 
   KeyRound, Eye, EyeOff, Check, Trash2, Loader2, Database, Info, 
-  CheckCircle2, ChevronRight, Key, RefreshCw, Radio, CreditCard, Link, Copy, AlertTriangle, ShieldCheck, ChevronDown, Settings2, Sliders, Play, Lock, CopyCheck
+  CheckCircle2, ChevronRight, Key, RefreshCw, Radio, CreditCard, Link, Copy, AlertTriangle, ShieldCheck, ChevronDown, Settings2, Sliders, Play, Lock, CopyCheck, Sparkles, Activity
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
@@ -182,6 +187,8 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
   const [isCredentialsOpen, setIsCredentialsOpen] = useState(false);
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
   const [isWebhooksOpen, setIsWebhooksOpen] = useState(false);
+  const [isAuditOpen, setIsAuditOpen] = useState(false);
+  const [isReprocessing, setIsReprocessing] = useState(false);
 
   // Auto-scrolling ref to keys setup
   const credentialsRef = useRef<HTMLDivElement>(null);
@@ -694,7 +701,26 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
           pluggyId: itemToSave.pluggyId,
           userId: user.uid,
           createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
+          updatedAt: serverTimestamp(),
+          // Persist the full normalized metadata:
+          rawAmount: itemToSave.rawAmount !== undefined ? itemToSave.rawAmount : null,
+          sourceRaw: itemToSave.sourceRaw || null,
+          bankRawName: itemToSave.bankRawName || null,
+          accountRawName: itemToSave.accountRawName || null,
+          accountLabel: itemToSave.accountLabel || null,
+          accountId: itemToSave.accountId || null,
+          itemId: itemToSave.itemId || null,
+          pluggyType: itemToSave.pluggyType || null,
+          accountType: itemToSave.accountType || null,
+          accountSubtype: itemToSave.accountSubtype || null,
+          operationType: itemToSave.operationType || null,
+          paymentData: itemToSave.paymentData || null,
+          merchant: itemToSave.merchant || null,
+          detectedDirection: itemToSave.detectedDirection || itemToSave.type,
+          directionConfidence: itemToSave.directionConfidence !== undefined ? itemToSave.directionConfidence : null,
+          directionReason: itemToSave.directionReason || null,
+          isLikelyInternalTransfer: itemToSave.isLikelyInternalTransfer !== undefined ? itemToSave.isLikelyInternalTransfer : false,
+          shouldIgnoreInTotals: itemToSave.shouldIgnoreInTotals !== undefined ? itemToSave.shouldIgnoreInTotals : false,
         } as any);
       }
 
@@ -706,6 +732,101 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
       setPluggySyncStep('Ocorreu um erro inesperado.');
     } finally {
       setIsSyncingPluggy(false);
+    }
+  };
+
+  // --- HISTORICAL AUDIT AND HIGH-TOUCH SANITIZER ENGINE ---
+  const getAuditReport = () => {
+    let mismatchedFields = 0;
+    let dirtyBankNames = 0;
+    let totalAuditable = 0;
+
+    for (const t of transactions) {
+      if (!t.pluggyId) continue;
+      totalAuditable++;
+
+      const direction = classifyPluggyDirection({
+        amount: t.rawAmount !== undefined ? t.rawAmount : (t.type === 'Receita' ? t.amount : -Math.abs(t.amount)),
+        pluggyType: t.pluggyType || (t.type === 'Receita' ? 'CREDIT' : 'DEBIT'),
+        accountType: t.accountType,
+        accountSubtype: t.accountSubtype,
+        description: t.descriptionRaw || t.desc,
+        operationType: t.operationType,
+        originalCategory: t.cat,
+      });
+
+      const institution = normalizeInstitutionName({
+        connectorName: t.source,
+        providerName: t.source,
+        itemName: t.source,
+        accountName: t.source,
+      });
+
+      const needsTypeUpdate = t.type !== direction.detectedDirection;
+      const needsSourceUpdate = t.source !== institution.source;
+
+      if (needsTypeUpdate) mismatchedFields++;
+      if (needsSourceUpdate) dirtyBankNames++;
+    }
+
+    return { totalAuditable, mismatchedFields, dirtyBankNames };
+  };
+
+  const handleReprocessAllTransactions = async () => {
+    setIsReprocessing(true);
+    try {
+      let correctedCount = 0;
+      for (const t of transactions) {
+        if (!t.pluggyId || !t.id) continue;
+
+        const direction = classifyPluggyDirection({
+          amount: t.rawAmount !== undefined ? t.rawAmount : (t.type === 'Receita' ? t.amount : -Math.abs(t.amount)),
+          pluggyType: t.pluggyType || (t.type === 'Receita' ? 'CREDIT' : 'DEBIT'),
+          accountType: t.accountType,
+          accountSubtype: t.accountSubtype,
+          description: t.descriptionRaw || t.desc,
+          operationType: t.operationType,
+          originalCategory: t.cat,
+        });
+
+        const institution = normalizeInstitutionName({
+          connectorName: t.source,
+          providerName: t.source,
+          itemName: t.source,
+          accountName: t.source,
+        });
+
+        const needsTypeUpdate = t.type !== direction.detectedDirection;
+        const needsAmountUpdate = t.amount !== direction.normalizedAmount;
+        const needsSourceUpdate = t.source !== institution.source;
+        const needsDescriptionClean = t.desc !== cleanDescriptionLocally(t.desc);
+
+        if (needsTypeUpdate || needsAmountUpdate || needsSourceUpdate || needsDescriptionClean || !t.bankRawName) {
+          const docRef = doc(db, 'transactions', t.id);
+          await updateDoc(docRef, {
+            type: direction.detectedDirection,
+            amount: direction.normalizedAmount,
+            source: institution.source,
+            desc: cleanDescriptionLocally(t.desc),
+            updatedAt: serverTimestamp(),
+            // Ensure fields are fully populated:
+            rawAmount: t.rawAmount !== undefined ? t.rawAmount : (t.type === 'Receita' ? t.amount : -Math.abs(t.amount)),
+            bankRawName: t.bankRawName || institution.bankRawName,
+            detectedDirection: direction.detectedDirection,
+            directionConfidence: direction.confidence,
+            directionReason: direction.reason,
+            isLikelyInternalTransfer: direction.isLikelyInternalTransfer,
+            shouldIgnoreInTotals: direction.shouldIgnoreInTotals
+          });
+          correctedCount++;
+        }
+      }
+      toast.success(`${correctedCount} transações históricas foram analisadas, corrigidas e gravadas com sucesso!`);
+    } catch (err: any) {
+      console.error(err);
+      toast.error('Falha ao auditar e reprocessar dados históricos.');
+    } finally {
+      setIsReprocessing(false);
     }
   };
 
@@ -1672,6 +1793,91 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
                 </div>
               )}
             </div>
+          </div>
+        </AdvancedAccordion>
+
+        {/* Accordion 4 - Saneamento e Auditoria de Histórico */}
+        <AdvancedAccordion
+          title="Saneamento e auditoria de histórico"
+          icon={<Sparkles className="w-4.5 h-4.5 text-emerald-500 shrink-0" />}
+          isOpen={isAuditOpen}
+          onToggle={() => setIsAuditOpen(!isAuditOpen)}
+        >
+          <div className="space-y-4 font-sans">
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed font-sans">
+              Nosso motor híbrido de saneamento analisa todas as transações importadas no sistema em busca de divergências de sinais ou classificações incorretas geradas por versões legadas da IA ou da API.
+            </p>
+
+            {(() => {
+              const report = getAuditReport();
+              const hasIssues = report.mismatchedFields > 0 || report.dirtyBankNames > 0;
+
+              return (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="p-3 bg-slate-50 dark:bg-black/20 border border-slate-100 dark:border-slate-800 rounded-xl">
+                      <span className="text-[10px] text-slate-400 font-medium block uppercase tracking-wider">Transações analisadas</span>
+                      <span className="text-lg font-bold text-slate-700 dark:text-slate-300 block mt-1">{report.totalAuditable}</span>
+                    </div>
+                    <div className="p-3 bg-slate-50 dark:bg-black/20 border border-slate-100 dark:border-slate-800 rounded-xl">
+                      <span className="text-[10px] text-slate-405 text-slate-400 font-medium block uppercase tracking-wider">Erros de Direção (Receita/Despesa)</span>
+                      <span className={`text-lg font-bold block mt-1 ${report.mismatchedFields > 0 ? 'text-amber-500' : 'text-emerald-500'}`}>
+                        {report.mismatchedFields}
+                      </span>
+                    </div>
+                    <div className="p-3 bg-slate-50 dark:bg-black/20 border border-slate-100 dark:border-slate-800 rounded-xl">
+                      <span className="text-[10px] text-slate-400 font-medium block uppercase tracking-wider">Nomes Técnicos Sujos</span>
+                      <span className={`text-lg font-bold block mt-1 ${report.dirtyBankNames > 0 ? 'text-amber-500' : 'text-emerald-500'}`}>
+                        {report.dirtyBankNames}
+                      </span>
+                    </div>
+                  </div>
+
+                  {hasIssues ? (
+                    <div className="p-4 bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/60 rounded-xl text-slate-705 dark:text-slate-300 space-y-3">
+                      <div className="flex gap-2.5 items-start">
+                        <Info className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                        <div className="space-y-1">
+                          <p className="font-bold text-xs text-slate-800 dark:text-slate-200">Inconsistências Identificadas!</p>
+                          <p className="text-[11px] leading-relaxed text-slate-605 text-slate-400">
+                            Encontramos lançamentos no histórico que estão com direção financeira contrária (por exemplo, compras de cartão de crédito marcadas como Receita) ou com nomes de instituições sujos (por exemplo, como 'MEU PUGGLY - NU PAGAMENTOS').
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleReprocessAllTransactions}
+                        disabled={isReprocessing}
+                        className="w-full h-10 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-2 cursor-pointer shadow-xs transition-colors"
+                      >
+                        {isReprocessing ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin text-white" />
+                            <span>Saneando e atualizando lote...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span>Sanear e Reclassificar Histórico de Transações</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="p-4 bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/30 rounded-xl text-slate-600 dark:text-slate-300">
+                      <div className="flex gap-2.5 items-center">
+                        <CheckCircle2 className="w-4.5 h-4.5 text-emerald-500 shrink-0" />
+                        <div>
+                          <p className="font-bold text-xs text-slate-850 dark:text-slate-200">Sinalização 100% Segura e Normalizada</p>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 font-sans">Nenhuma divergência de dados ou classificação foi identificada nos registros importados por Pluggy.</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         </AdvancedAccordion>
       </div>

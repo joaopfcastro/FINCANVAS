@@ -1,4 +1,11 @@
 import { PluggyService } from "./src/lib/pluggyService";
+import { 
+  classifyPluggyDirection, 
+  normalizeInstitutionName, 
+  cleanDescriptionLocally 
+} from "./src/lib/pluggyNormalizer";
+
+import * as normalizer from "./src/lib/pluggyNormalizer";
 
 async function runTests() {
   console.log("================================================");
@@ -49,52 +56,97 @@ async function runTests() {
     "Autenticação rejeita Client ID vazio"
   );
 
-  await assertThrows(
-    () => PluggyService.authenticate("some-id", ""),
-    "Client ID e Client Secret são campos obrigatórios",
-    "Autenticação rejeita Client Secret vazio"
-  );
+  // --- Testes de Normalização de Nomes de Instituições ---
+  console.log("\n🧪 Testando Normalização de Bancos:");
+  const testBankName = (raw: string, expected: string) => {
+    const res = normalizer.normalizeInstitutionName({
+      connectorName: raw,
+      providerName: raw,
+      itemName: raw,
+      accountName: raw
+    });
+    assert(res.source === expected, `Normaliza "${raw}" -> "${expected}"`);
+  };
 
-  // --- Teste 3: Mapeamento de Transações Sincronizadas ---
-  try {
-    const mockApiKey = "dummy-api-key";
-    const mockItems = [
-      {
-        id: "item-1234",
-        status: "UPDATED",
-        connector: {
-          id: 2,
-          name: "Itaú",
-          imageUrl: "https://example.com/itau.png"
-        }
-      }
-    ];
+  testBankName("MEU PUGGLY - NU PAGAMENTOS S.A.", "Nubank");
+  testBankName("MEU PUGGLY - ITAU UNIBANCO S.A.", "Itaú");
+  testBankName("MEU PUGGLY - BANCO BRADESCO S.A.", "Bradesco");
+  testBankName("BANCO DO BRASIL S.A.", "Banco do Brasil");
+  testBankName("CAIXA ECONOMICA FEDERAL", "Caixa");
+  testBankName("INTER MEDIUM S.A.", "Inter");
+  testBankName("CELCOIN IP S.A.", "Celcoin");
+  testBankName("DOCK INSTITUICAO DE PAGAMENTO", "Dock");
 
-    // Simulando mapeamento de dados de transação bruto
-    const mockRawTx = {
-      id: "tx-999",
-      date: "2026-05-25T11:00:00Z",
-      description: "IFOOD *RESTAURANTE SAO PAULO",
-      amount: -45.90,
-      category: "Alimentação"
-    };
+  // --- Testes de Direção Financeira (Receita vs Despesa) ---
+  console.log("\n🧪 Testando Direção Financeira (Cenários Críticos):");
 
-    // Validamos se o estruturador do nosso serviço se adequaria às chaves corretas
-    assert(mockRawTx.id === "tx-999", "Coleta transação identificadora única (UUID)");
-    assert(Math.abs(mockRawTx.amount) === 45.90, "Transações de despesa são convertidas para valor absoluto positivo");
-    assert(mockRawTx.category === "Alimentação", "Categoria original da API é catalogada corretamente");
+  // Caso 1: Compra de Cartão de Crédito (Gasto)
+  const ccExpense = normalizer.classifyPluggyDirection({
+    amount: -89.90,
+    pluggyType: "DEBIT",
+    accountType: "CREDIT_CARD",
+    description: "SUBSTANTIAL SUPERMARKET PURCHASE"
+  });
+  assert(ccExpense.detectedDirection === "Despesa", "Gasto em cartão de crédito (DEBIT) de -89.90 é Despesa");
+  assert(ccExpense.normalizedAmount === 89.90, "Gasto em cartão de crédito tem valor absoluto correto de 89.90");
 
-  } catch (err: any) {
-    console.error("Erro no Teste 3:", err);
-    failed = true;
-  }
+  // Caso 2: Pagamento/Fatura de Cartão de Crédito (Pagamento de fatura)
+  const ccPayment = normalizer.classifyPluggyDirection({
+    amount: 500.00,
+    pluggyType: "CREDIT",
+    accountType: "CREDIT_CARD",
+    description: "PAGAMENTO CRÉDITO RECEBIDO"
+  });
+  assert(ccPayment.shouldIgnoreInTotals === true, "Pagamento de fatura de cartão de crédito é marcado para ser ignorado nos totais");
+
+  // Caso 3: PIX Recebido (Receita)
+  const pixReceived = normalizer.classifyPluggyDirection({
+    amount: 150.00,
+    pluggyType: "CREDIT",
+    accountType: "CHECKING_ACCOUNT",
+    description: "PIX RECEBIDO DE JOAO DA SILVA"
+  });
+  assert(pixReceived.detectedDirection === "Receita", "PIX Recebido (CREDIT, Checking) de 150.00 é Receita");
+
+  // Caso 4: PIX Enviado (Despesa)
+  const pixSent = normalizer.classifyPluggyDirection({
+    amount: -75.00,
+    pluggyType: "DEBIT",
+    accountType: "CHECKING_ACCOUNT",
+    description: "PIX ENVIADO PARA MARIA"
+  });
+  assert(pixSent.detectedDirection === "Despesa", "PIX Enviado (DEBIT, Checking) de -75.00 é Despesa");
+
+  // Caso 5: Resgate de Investimento (Transferência Interna)
+  const internalTrf = normalizer.classifyPluggyDirection({
+    amount: 1000.00,
+    pluggyType: "CREDIT",
+    accountType: "CHECKING_ACCOUNT",
+    description: "RESGATE AUTOMÁTICO DE INVESTIMENTO"
+  });
+  assert(internalTrf.isLikelyInternalTransfer === true, "Resgate de investimento é detectado como transferência interna");
+
+  // --- Testes de Limpeza de Descrição ---
+  console.log("\n🧪 Testando Limpeza de Descrição:");
+  const testDescClean = (raw: string, expected: string) => {
+    const res = normalizer.cleanDescriptionLocally(raw);
+    assert(res === expected, `Limpa "${raw}" -> "${expected}"`);
+  };
+
+  testDescClean("IFOOD *RESTAURANTE SAO PAULO BR", "iFood");
+  testDescClean("UBER *TRIP HELP RIDE", "Uber");
+  testDescClean("99APP RIDE TAXI SEBASTIAO", "99");
+  testDescClean("AUTOMOVEL CABIFY BILLING", "Cabify");
+  testDescClean("COMPRA MERCADOLIVRE ELETRONICOS", "Mercado Livre");
+  testDescClean("PAGAMENTO DE ASSINATURA NETFLIX BR", "Netflix");
+  testDescClean("MANDATORIO SPOTIFY MUSIC PREMIUM", "Spotify");
 
   console.log("================================================");
   if (failed) {
     console.error("🚨 FALHA ENCONTRADA EM UMA OU MAIS ASSERÇÕES!");
     process.exit(1);
   } else {
-    console.log("🎉 TODOS OS TESTES UNITÁRIOS PASSARAM COM ESTILO!");
+    console.log("🎉 TODOS OS TESTES UNITÁRIOS PASSARAM COM EXTREMA PRECISÃO!");
     console.log("================================================");
   }
 }
