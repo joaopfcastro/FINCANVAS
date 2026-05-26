@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { useVisualViewport } from '../hooks/useVisualViewport';
-import { Transaction } from '../App';
+import { Transaction, AccountBalance } from '../App';
 import { 
   PieChart as PieChartIcon, 
   Sparkles, 
@@ -62,6 +62,7 @@ interface ReportsViewProps {
   onEditTransaction?: (t: Transaction) => void;
   onOpenManualEntry?: () => void;
   onNavigateImport: () => void;
+  accountBalances: AccountBalance[];
 }
 
 
@@ -76,7 +77,8 @@ export const ReportsView = React.memo(function ReportsView({
   setFilterConfig,
   onEditTransaction,
   onOpenManualEntry,
-  onNavigateImport
+  onNavigateImport,
+  accountBalances
 }: ReportsViewProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'ai'>('overview');
   const [reportHtml, setReportHtml] = useState<string | null>(null);
@@ -240,10 +242,19 @@ export const ReportsView = React.memo(function ReportsView({
     const monthlyMap: Record<string, { month: string, receita: number, despesa: number }> = {};
     
     let overallBalance = 0;
+    if (accountBalances && accountBalances.length > 0) {
+      accountBalances.forEach(acc => {
+        if (acc.includeInSaldoTotal) {
+          overallBalance += acc.balance;
+        }
+      });
+    } else {
+      transactions.forEach(t => {
+        overallBalance += t.type === 'Receita' ? t.amount : -Math.abs(t.amount);
+      });
+    }
 
     transactions.forEach(t => {
-      overallBalance += t.type === 'Receita' ? t.amount : -Math.abs(t.amount);
-
       try {
         const date = parse(t.date, 'dd/MM/yyyy', new Date());
         const monthKey = format(date, 'MMM/yy', { locale: ptBR });
@@ -265,7 +276,7 @@ export const ReportsView = React.memo(function ReportsView({
     const monthlyData = Object.values(monthlyMap).reverse().slice(-6);
 
     return { totalIncome, totalExpense, balance, savingsRate, categoryData, monthlyData, overallBalance };
-  }, [currentMonthTransactions, transactions]);
+  }, [currentMonthTransactions, transactions, accountBalances]);
 
   const getTransactionsFingerprint = (txs: Transaction[]) => {
     return txs

@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { doc, updateDoc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { doc, updateDoc, serverTimestamp, setDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
 import { UserProfile, Transaction } from '../App';
 import { User } from 'firebase/auth';
 import { 
   classifyPluggyDirection, 
   normalizeInstitutionName, 
-  cleanDescriptionLocally 
+  cleanDescriptionLocally,
+  shouldIncludeInSaldoTotal
 } from '../lib/pluggyNormalizer';
 import { 
   KeyRound, Eye, EyeOff, Check, Trash2, Loader2, Database, Info, 
@@ -636,6 +637,75 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
       const data = await safeJsonClient(res);
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'Problema de resposta no servidor de sincronização.');
+      }
+
+      // Upsert retrieved account balances
+      const incomingAccounts = data.accounts || [];
+      if (incomingAccounts.length > 0) {
+        const balancesCol = collection(db, 'accountBalances');
+        const qBalances = query(balancesCol, where('userId', '==', user.uid));
+        const currentBalancesSnap = await getDocs(qBalances);
+        
+        const existingDocsMap = new Map<string, { id: string, includeInSaldoTotal: boolean, includeReason: string }>();
+        currentBalancesSnap.docs.forEach(docSnap => {
+          const bData = docSnap.data();
+          if (bData.accountId) {
+            existingDocsMap.set(bData.accountId, {
+              id: docSnap.id,
+              includeInSaldoTotal: bData.includeInSaldoTotal !== undefined ? bData.includeInSaldoTotal : true,
+              includeReason: bData.includeReason || ''
+            });
+          }
+        });
+
+        for (const acc of incomingAccounts) {
+          const existing = existingDocsMap.get(acc.accountId);
+          let include = true;
+          let reason = 'Saldo disponível';
+
+          if (existing) {
+            include = existing.includeInSaldoTotal;
+            reason = existing.includeReason;
+          } else {
+            const decision = shouldIncludeInSaldoTotal(acc.accountType, acc.accountSubtype);
+            include = decision.include;
+            reason = decision.reason;
+          }
+
+          const docPayload = {
+            userId: user.uid,
+            provider: 'pluggy',
+            itemId: acc.itemId || null,
+            accountId: acc.accountId,
+            bankName: acc.bankName,
+            bankRawName: acc.bankRawName || null,
+            accountName: acc.accountName,
+            accountRawName: acc.accountRawName || null,
+            accountLabel: acc.accountLabel,
+            accountType: acc.accountType,
+            accountSubtype: acc.accountSubtype || null,
+            number: acc.number || null,
+            balance: typeof acc.balance === 'number' ? acc.balance : 0,
+            currencyCode: acc.currencyCode || 'BRL',
+            includeInSaldoTotal: include,
+            includeReason: reason,
+            status: acc.status || 'ACTIVE',
+            sourceRaw: acc.sourceRaw || null,
+            lastSyncedAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          };
+
+          if (existing) {
+            const docRef = doc(db, 'accountBalances', existing.id);
+            await setDoc(docRef, docPayload, { merge: true });
+          } else {
+            const docRef = doc(balancesCol);
+            await setDoc(docRef, {
+              ...docPayload,
+              createdAt: serverTimestamp()
+            });
+          }
+        }
       }
 
       const list: any[] = data.transactions || [];

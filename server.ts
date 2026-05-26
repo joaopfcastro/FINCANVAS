@@ -819,15 +819,17 @@ async function startServer() {
       }
 
       // Baixa contas e transações associadas
+      const rawAccountsBatch = await PluggyService.syncAccounts(apiKey, items);
       const rawTransactionsBatch = await PluggyService.syncTransactions(apiKey, items, 30);
-      console.log(`[Pluggy Sync Endpoint] Extraídas ${rawTransactionsBatch.length} transações brutas para processamento com IA.`);
+      console.log(`[Pluggy Sync Endpoint] Extraídas ${rawAccountsBatch.length} contas e ${rawTransactionsBatch.length} transações brutas para processamento com IA.`);
 
       if (rawTransactionsBatch.length === 0) {
         return res.json({ 
           success: true, 
           ok: true, 
           transactions: [], 
-          message: "Sincronização OK! Nenhuma movimentação bancária foi identificada nos últimos 30 dias de extrato." 
+          accounts: rawAccountsBatch,
+          message: "Sincronização OK! Nenhuma movimentação bancária foi identificada nos últimos 30 dias de extrato. Saldos de contas atualizados." 
         });
       }
 
@@ -1039,7 +1041,7 @@ Retorne obrigatoriamente um array JSON correspondendo a cada 'pluggyId' recebido
         }
       }
 
-      res.json({ success: true, ok: true, transactions: categorizedList });
+      res.json({ success: true, ok: true, transactions: categorizedList, accounts: rawAccountsBatch });
     } catch (err: any) {
       console.error("[Pluggy sync HTTP Router Error]:", err.message);
       res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ 

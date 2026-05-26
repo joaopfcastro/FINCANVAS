@@ -45,6 +45,35 @@ service cloud.firestore {
              data.createdAt is timestamp && data.updatedAt is timestamp;
     }
 
+    function isValidAccountBalance(data) {
+      return data.keys().hasAll([
+        'userId', 'provider', 'accountId', 'bankName', 'accountName', 
+        'accountLabel', 'accountType', 'balance', 'includeInSaldoTotal', 
+        'includeReason', 'lastSyncedAt', 'createdAt', 'updatedAt'
+      ]) &&
+             data.size() >= 13 && data.size() <= 25 &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.provider is string && (data.provider == 'pluggy' || data.provider == 'manual') &&
+             data.accountId is string && data.accountId.size() <= 128 &&
+             data.bankName is string && data.bankName.size() <= 100 &&
+             data.accountName is string && data.accountName.size() <= 100 &&
+             data.accountLabel is string && data.accountLabel.size() <= 100 &&
+             data.accountType is string && data.accountType.size() <= 100 &&
+             data.balance is number &&
+             data.includeInSaldoTotal is bool &&
+             data.includeReason is string && data.includeReason.size() <= 200 &&
+             data.lastSyncedAt is timestamp &&
+             data.createdAt is timestamp && data.updatedAt is timestamp &&
+             (!data.keys().hasAny(['itemId']) || (data.itemId is string && data.itemId.size() <= 128)) &&
+             (!data.keys().hasAny(['bankRawName']) || (data.bankRawName is string && data.bankRawName.size() <= 100)) &&
+             (!data.keys().hasAny(['accountRawName']) || (data.accountRawName is string && data.accountRawName.size() <= 100)) &&
+             (!data.keys().hasAny(['accountSubtype']) || (data.accountSubtype is string && data.accountSubtype.size() <= 100)) &&
+             (!data.keys().hasAny(['number']) || (data.number is string && data.number.size() <= 50)) &&
+             (!data.keys().hasAny(['currencyCode']) || (data.currencyCode is string && data.currencyCode.size() <= 10)) &&
+             (!data.keys().hasAny(['status']) || (data.status is string && data.status.size() <= 50)) &&
+             (!data.keys().hasAny(['sourceRaw']) || (data.sourceRaw is string && data.sourceRaw.size() <= 200));
+    }
+
     match /transactions/{transactionId} {
       allow get: if isSignedIn() && existing().userId == request.auth.uid && isValidId(transactionId);
       allow delete: if isSignedIn() && existing().userId == request.auth.uid && isValidId(transactionId);
@@ -100,6 +129,35 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt && 
         incoming().updatedAt == request.time && 
         incoming().diff(existing()).affectedKeys().hasOnly(['highSpendingAlerts', 'categories', 'darkMode', 'phone', 'pluggyClientId', 'pluggyClientSecret', 'pluggyItemIds', 'updatedAt'])
+      );
+    }
+
+    match /accountBalances/{balanceId} {
+      allow get: if isSignedIn() && existing().userId == request.auth.uid && isValidId(balanceId);
+      allow delete: if isSignedIn() && existing().userId == request.auth.uid && isValidId(balanceId);
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      
+      allow create: if (
+        isSignedIn() && 
+        isValidId(balanceId) && 
+        isValidAccountBalance(incoming()) && 
+        incoming().createdAt == request.time && 
+        incoming().updatedAt == request.time
+      );
+      
+      allow update: if (
+        isSignedIn() && 
+        isValidId(balanceId) && 
+        isValidAccountBalance(incoming()) && 
+        existing().userId == request.auth.uid && 
+        incoming().userId == existing().userId && 
+        incoming().createdAt == existing().createdAt && 
+        incoming().updatedAt == request.time && 
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'balance', 'includeInSaldoTotal', 'includeReason', 'lastSyncedAt', 'updatedAt',
+          'bankName', 'bankRawName', 'accountName', 'accountRawName', 'accountLabel',
+          'accountType', 'accountSubtype', 'number', 'currencyCode', 'status', 'sourceRaw', 'raw'
+        ])
       );
     }
   }

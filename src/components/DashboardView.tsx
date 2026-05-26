@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { useVisualViewport } from '../hooks/useVisualViewport';
-import { Transaction } from '../App';
+import { Transaction, AccountBalance } from '../App';
 import { 
   BarChart3, 
   TrendingUp, 
@@ -23,13 +23,16 @@ import {
   Filter,
   Edit3,
   Trash2,
-  Settings2
+  Settings2,
+  Check,
+  ToggleLeft,
+  ToggleRight
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { secureGenerateContent } from '../lib/gemini';
 import { format } from 'date-fns';
-import { collection, addDoc, serverTimestamp, deleteDoc, doc } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { toast } from 'sonner';
 
@@ -47,12 +50,22 @@ interface DashboardViewProps {
   onNavigateImport: () => void;
   onOpenManualEntry: () => void;
   onEditTransaction: (transaction: Transaction) => void;
+  accountBalances: AccountBalance[];
 }
 
 
 
 
-export const DashboardView = React.memo(function DashboardView({ transactions, loadingTransactions, filterConfig, setFilterConfig, onNavigateImport, onOpenManualEntry, onEditTransaction }: DashboardViewProps) {
+export const DashboardView = React.memo(function DashboardView({ 
+  transactions, 
+  loadingTransactions, 
+  filterConfig, 
+  setFilterConfig, 
+  onNavigateImport, 
+  onOpenManualEntry, 
+  onEditTransaction,
+  accountBalances
+}: DashboardViewProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
   const [currentPage, setCurrentPage] = useState(1);
@@ -245,15 +258,25 @@ export const DashboardView = React.memo(function DashboardView({ transactions, l
     let overallBalance = 0;
     const sourceMap: Record<string, number> = {};
     
-    transactions.forEach(t => {
-      const val = t.type === 'Receita' ? t.amount : -Math.abs(t.amount);
-      overallBalance += val;
-      const src = t.source || 'Desconhecida';
-      sourceMap[src] = (sourceMap[src] || 0) + val;
-    });
+    if (accountBalances && accountBalances.length > 0) {
+      accountBalances.forEach(acc => {
+        const src = acc.bankName || acc.accountLabel || 'Outros';
+        sourceMap[src] = (sourceMap[src] || 0) + acc.balance;
+        if (acc.includeInSaldoTotal) {
+          overallBalance += acc.balance;
+        }
+      });
+    } else {
+      transactions.forEach(t => {
+        const val = t.type === 'Receita' ? t.amount : -Math.abs(t.amount);
+        overallBalance += val;
+        const src = t.source || 'Desconhecida';
+        sourceMap[src] = (sourceMap[src] || 0) + val;
+      });
+    }
 
     return { totalReceitas: tr, totalDespesas: td, maiorDespesa: md, saldoTotal: overallBalance, balancesBySource: sourceMap };
-  }, [currentMonthTransactions, transactions]);
+  }, [currentMonthTransactions, transactions, accountBalances]);
 
   const saldo = totalReceitas - totalDespesas;
   
@@ -521,6 +544,50 @@ export const DashboardView = React.memo(function DashboardView({ transactions, l
     });
     return filtered;
   }, [balancesBySource, modalSearchTerm]);
+
+  const filteredAccountBalances = useMemo(() => {
+    if (!accountBalances) return [];
+    return accountBalances.filter(acc => {
+      if (!modalSearchTerm) return true;
+      const term = modalSearchTerm.toLowerCase();
+      return (
+        acc.bankName.toLowerCase().includes(term) ||
+        acc.accountLabel.toLowerCase().includes(term) ||
+        acc.accountName.toLowerCase().includes(term) ||
+        (acc.number || '').includes(term)
+      );
+    });
+  }, [accountBalances, modalSearchTerm]);
+
+  const modalStats = useMemo(() => {
+    if (modalType !== 'saldo-total') return { counts: 0, total: 0, average: 0 };
+    
+    if (accountBalances && accountBalances.length > 0) {
+      const counts = filteredAccountBalances.length;
+      const total = filteredAccountBalances.filter(acc => acc.includeInSaldoTotal).reduce((sum, b) => sum + b.balance, 0);
+      const average = counts > 0 ? total / counts : 0;
+      return { counts, total, average };
+    } else {
+      const counts = Object.keys(filteredBalancesBySource).length;
+      const total = (Object.values(filteredBalancesBySource) as number[]).reduce((acc, v) => acc + v, 0);
+      const average = counts > 0 ? total / counts : 0;
+      return { counts, total, average };
+    }
+  }, [modalType, accountBalances, filteredAccountBalances, filteredBalancesBySource]);
+
+  const handleToggleIncludeInTotal = async (accId: string, currentValue: boolean) => {
+    try {
+      const docRef = doc(db, 'accountBalances', accId);
+      await updateDoc(docRef, {
+        includeInSaldoTotal: !currentValue,
+        updatedAt: serverTimestamp()
+      });
+      toast.success('Configuração de saldo atualizada com sucesso!');
+    } catch (err: any) {
+      console.error(err);
+      toast.error('Erro ao atualizar a configuração da conta: ' + err.message);
+    }
+  };
 
   if (loadingTransactions) {
     return (
@@ -893,7 +960,7 @@ export const DashboardView = React.memo(function DashboardView({ transactions, l
                   <span className="hidden sm:inline">Volume</span>
                 </span>
                 <span className="text-base sm:text-lg font-black text-slate-800 leading-none">
-                  {modalType === 'saldo-total' ? Object.keys(filteredBalancesBySource).length : filteredModalData.length}
+                  {modalType === 'saldo-total' ? modalStats.counts : filteredModalData.length}
                 </span>
                 <span className="text-[9px] text-slate-400 block mt-1 font-bold">
                   {modalType === 'saldo-total' ? 'Contas' : 'Itens'}
@@ -904,11 +971,11 @@ export const DashboardView = React.memo(function DashboardView({ transactions, l
                 <span className={`text-base sm:text-lg font-black leading-none ${
                   modalType === 'receitas' ? 'text-emerald-600' :
                   modalType === 'despesas' ? 'text-rose-600' :
-                  modalType === 'saldo-total' ? ((Object.values(filteredBalancesBySource) as number[]).reduce((acc, v) => acc + v, 0) >= 0 ? 'text-emerald-600' : 'text-rose-600') :
+                  modalType === 'saldo-total' ? (modalStats.total >= 0 ? 'text-emerald-600' : 'text-rose-600') :
                   'text-slate-800'
                 }`}>
                   {formatMoeda(
-                    modalType === 'saldo-total' ? (Object.values(filteredBalancesBySource) as number[]).reduce((acc, v) => acc + v, 0) :
+                    modalType === 'saldo-total' ? modalStats.total :
                     filteredModalData.reduce((acc, t) => acc + (modalType === 'saldo' ? (t.type === 'Receita' ? t.amount : -Math.abs(t.amount)) : Math.abs(t.amount)), 0)
                   )}
                 </span>
@@ -918,12 +985,11 @@ export const DashboardView = React.memo(function DashboardView({ transactions, l
                 <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Média</span>
                 <span className="text-base sm:text-lg font-black text-slate-800 leading-none">
                   {formatMoeda(
-                    modalType === 'saldo-total'
-                      ? (Object.keys(filteredBalancesBySource).length > 0 ? Math.abs((Object.values(filteredBalancesBySource) as number[]).reduce((acc, v) => acc + v, 0)) / Object.keys(filteredBalancesBySource).length : 0)
-                      : (filteredModalData.length > 0 ? filteredModalData.reduce((acc, t) => acc + Math.abs(t.amount), 0) / filteredModalData.length : 0)
+                    modalType === 'saldo-total' ? modalStats.average :
+                    (filteredModalData.length > 0 ? filteredModalData.reduce((acc, t) => acc + Math.abs(t.amount), 0) / filteredModalData.length : 0)
                   )}
                 </span>
-                <span className="text-[9px] text-slate-400 block mt-1 font-bold">Por transação</span>
+                <span className="text-[9px] text-slate-400 block mt-1 font-bold">Por conta / item</span>
               </div>
             </div>
             )}
@@ -1027,57 +1093,157 @@ export const DashboardView = React.memo(function DashboardView({ transactions, l
               </div>
             ) : modalType === 'saldo-total' ? (
               <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-                <table className="w-full text-left border-collapse hidden sm:table">
-                  <thead className="bg-slate-50/50">
-                    <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
-                      <th className="px-6 py-4">Instituição / Origem</th>
-                      <th className="px-6 py-4 text-right">Saldo Consolidado</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-sm text-slate-700 divide-y divide-slate-50">
-                    {Object.entries(filteredBalancesBySource).length === 0 ? (
-                      <tr>
-                        <td colSpan={2} className="px-6 py-12 text-center text-slate-400 font-bold">Nenhum dado encontrado.</td>
-                      </tr>
-                    ) : (
-                      Object.entries(filteredBalancesBySource as Record<string, number>).map(([source, amount], i) => (
-                        <tr key={i} className="hover:bg-slate-50/50 transition-colors group">
-                          <td className="px-6 py-4">
-                            <span className="flex items-center gap-3">
-                              <div className="w-8 h-8 shrink-0 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-xs shadow-sm shadow-blue-100/50">
+                {accountBalances && accountBalances.length > 0 ? (
+                  <>
+                    <table className="w-full text-left border-collapse hidden sm:table">
+                      <thead className="bg-slate-50/50">
+                        <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
+                          <th className="px-6 py-4">Instituição / Conta</th>
+                          <th className="px-6 py-4">Tipo</th>
+                          <th className="px-6 py-4 text-center">Incluir no Saldo?</th>
+                          <th className="px-6 py-4 text-right">Saldo Atual</th>
+                        </tr>
+                      </thead>
+                      <tbody className="text-sm text-slate-700 divide-y divide-slate-50">
+                        {filteredAccountBalances.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} className="px-6 py-12 text-center text-slate-400 font-bold">Nenhuma conta localizada para os termos de busca.</td>
+                          </tr>
+                        ) : (
+                          filteredAccountBalances.map((acc) => (
+                            <tr key={acc.id} className={`hover:bg-slate-50/50 transition-colors group ${!acc.includeInSaldoTotal ? 'opacity-65' : ''}`}>
+                              <td className="px-6 py-4">
+                                <span className="flex items-center gap-3">
+                                  <div className="w-8 h-8 shrink-0 rounded-xl bg-violet-50 text-violet-600 flex items-center justify-center font-bold text-xs shadow-sm shadow-violet-100/50">
+                                    {acc.bankName ? acc.bankName.charAt(0).toUpperCase() : 'B'}
+                                  </div>
+                                  <div>
+                                    <span className="font-bold text-slate-800 max-w-[200px] truncate block" title={acc.bankName}>{acc.bankName}</span>
+                                    <span className="text-[10px] text-slate-400 block font-medium">{acc.accountLabel || acc.accountName} {acc.number ? `• Ag/Cc: ${acc.number}` : ''}</span>
+                                  </div>
+                                </span>
+                              </td>
+                              <td className="px-6 py-4 text-xs font-semibold text-slate-500 capitalize font-mono">
+                                {acc.accountType === 'BANK' ? 'Conta Corrente' : 
+                                 acc.accountType === 'CREDIT' ? 'Cartão de Crédito' : 
+                                 acc.accountType === 'SAVINGS' ? 'Poupança' : acc.accountType || 'Banco'}
+                              </td>
+                              <td className="px-6 py-4 text-center">
+                                <button 
+                                  onClick={() => handleToggleIncludeInTotal(acc.id!, acc.includeInSaldoTotal)}
+                                  className="mx-auto flex items-center justify-center p-1 rounded-lg hover:bg-slate-100 transition-all focus:outline-none"
+                                  title={acc.includeInSaldoTotal ? "Incluído na soma de Saldo Total" : "Ignorado na soma de Saldo Total"}
+                                >
+                                  {acc.includeInSaldoTotal ? (
+                                    <ToggleRight className="w-8 h-8 text-emerald-600" />
+                                  ) : (
+                                    <ToggleLeft className="w-8 h-8 text-slate-300" />
+                                  )}
+                                </button>
+                              </td>
+                              <td className={`px-6 py-4 text-right font-black ${acc.balance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                {formatMoeda(acc.balance)}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+
+                    {/* Mobile Cards for Balance */}
+                    <div className="sm:hidden divide-y divide-slate-50">
+                      {filteredAccountBalances.length === 0 ? (
+                        <div className="px-6 py-12 text-center text-slate-400 font-bold italic">Nenhum dado para exibir.</div>
+                      ) : (
+                        filteredAccountBalances.map((acc) => (
+                          <div key={acc.id} className={`p-4 flex flex-col gap-3 ${!acc.includeInSaldoTotal ? 'opacity-65' : ''}`}>
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 shrink-0 rounded-2xl bg-violet-50 text-violet-600 flex items-center justify-center font-black text-sm shadow-sm">
+                                  {acc.bankName ? acc.bankName.charAt(0).toUpperCase() : 'B'}
+                                </div>
+                                <div>
+                                  <div className="font-bold text-slate-800 text-sm truncate max-w-[150px]">{acc.bankName}</div>
+                                  <div className="text-[10px] text-slate-400 font-medium">{acc.accountLabel || acc.accountName} {acc.number ? `• cc: ${acc.number}` : ''}</div>
+                                </div>
+                              </div>
+                              <div className={`text-sm font-black ${acc.balance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                {formatMoeda(acc.balance)}
+                              </div>
+                            </div>
+                            <div className="flex items-center justify-between bg-slate-50 p-2 rounded-xl text-xs">
+                              <span className="font-medium text-slate-500">Incluir no Saldo Total:</span>
+                              <button 
+                                onClick={() => handleToggleIncludeInTotal(acc.id!, acc.includeInSaldoTotal)}
+                                className="flex items-center focus:outline-none animate-none"
+                              >
+                                {acc.includeInSaldoTotal ? (
+                                  <span className="text-emerald-600 font-bold flex items-center gap-1">Sim <ToggleRight className="w-6 h-6 animate-none" /></span>
+                                ) : (
+                                  <span className="text-slate-400 font-medium flex items-center gap-1">Não <ToggleLeft className="w-6 h-6 animate-none" /></span>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <table className="w-full text-left border-collapse hidden sm:table">
+                      <thead className="bg-slate-50/50">
+                        <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
+                          <th className="px-6 py-4">Instituição / Origem</th>
+                          <th className="px-6 py-4 text-right">Saldo Consolidado</th>
+                        </tr>
+                      </thead>
+                      <tbody className="text-sm text-slate-700 divide-y divide-slate-50">
+                        {Object.entries(filteredBalancesBySource).length === 0 ? (
+                          <tr>
+                            <td colSpan={2} className="px-6 py-12 text-center text-slate-400 font-bold">Nenhum dado encontrado.</td>
+                          </tr>
+                        ) : (
+                          Object.entries(filteredBalancesBySource as Record<string, number>).map(([source, amount], i) => (
+                            <tr key={i} className="hover:bg-slate-50/50 transition-colors group">
+                              <td className="px-6 py-4">
+                                <span className="flex items-center gap-3">
+                                  <div className="w-8 h-8 shrink-0 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-xs shadow-sm shadow-blue-100/50">
+                                    {source.charAt(0).toUpperCase()}
+                                  </div>
+                                  <span className="font-bold text-slate-800 max-w-[200px] truncate" title={source}>{source}</span>
+                                </span>
+                              </td>
+                              <td className={`px-6 py-4 text-right font-black ${amount >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                {formatMoeda(amount)}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                    {/* Mobile Cards for Balance */}
+                    <div className="sm:hidden divide-y divide-slate-50">
+                      {Object.entries(filteredBalancesBySource).length === 0 ? (
+                        <div className="px-6 py-12 text-center text-slate-400 font-bold italic">Nenhum dado para exibir.</div>
+                      ) : (
+                        Object.entries(filteredBalancesBySource as Record<string, number>).map(([source, amount], i) => (
+                          <div key={i} className="p-4 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 shrink-0 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center font-black text-sm shadow-sm">
                                 {source.charAt(0).toUpperCase()}
                               </div>
-                              <span className="font-bold text-slate-800 max-w-[200px] truncate" title={source}>{source}</span>
-                            </span>
-                          </td>
-                          <td className={`px-6 py-4 text-right font-black ${amount >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                            {formatMoeda(amount)}
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-                {/* Mobile Cards for Balance */}
-                <div className="sm:hidden divide-y divide-slate-50">
-                  {Object.entries(filteredBalancesBySource).length === 0 ? (
-                    <div className="px-6 py-12 text-center text-slate-400 font-bold italic">Nenhum dado para exibir.</div>
-                  ) : (
-                    Object.entries(filteredBalancesBySource as Record<string, number>).map(([source, amount], i) => (
-                      <div key={i} className="p-4 flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 shrink-0 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center font-black text-sm shadow-sm">
-                            {source.charAt(0).toUpperCase()}
+                              <div className="font-bold text-slate-800 text-sm truncate max-w-[150px]">{source}</div>
+                            </div>
+                            <div className={`text-sm font-black ${amount >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              {formatMoeda(amount)}
+                            </div>
                           </div>
-                          <div className="font-bold text-slate-800 text-sm truncate max-w-[150px]">{source}</div>
-                        </div>
-                        <div className={`text-sm font-black ${amount >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                          {formatMoeda(amount)}
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
+                        ))
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
             ) : (
               <div className="space-y-4 pb-20 sm:pb-0">

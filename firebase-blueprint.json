@@ -35,6 +35,39 @@
         "updatedAt": { "type": "timestamp" }
       },
       "required": ["userId", "highSpendingAlerts", "createdAt", "updatedAt"]
+    },
+    "AccountBalance": {
+      "title": "AccountBalance",
+      "description": "An account balance snapshot from connected or manual banks",
+      "type": "object",
+      "properties": {
+         "userId": { "type": "string" },
+         "provider": { "type": "string", "enum": ["pluggy", "manual"] },
+         "itemId": { "type": "string" },
+         "accountId": { "type": "string" },
+         "bankName": { "type": "string" },
+         "bankRawName": { "type": "string" },
+         "accountName": { "type": "string" },
+         "accountRawName": { "type": "string" },
+         "accountLabel": { "type": "string" },
+         "accountType": { "type": "string" },
+         "accountSubtype": { "type": "string" },
+         "number": { "type": "string" },
+         "balance": { "type": "number" },
+         "currencyCode": { "type": "string" },
+         "includeInSaldoTotal": { "type": "boolean" },
+         "includeReason": { "type": "string" },
+         "status": { "type": "string" },
+         "sourceRaw": { "type": "string" },
+         "lastSyncedAt": { "type": "timestamp" },
+         "createdAt": { "type": "timestamp" },
+         "updatedAt": { "type": "timestamp" }
+      },
+      "required": [
+         "userId", "provider", "accountId", "bankName", "accountName", "accountLabel", 
+         "accountType", "balance", "includeInSaldoTotal", "includeReason", "lastSyncedAt", 
+         "createdAt", "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -45,6 +78,10 @@
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/UserProfile" },
       "description": "User profiles collection"
+    },
+    "/accountBalances/{balanceId}": {
+      "schema": { "$ref": "#/entities/AccountBalance" },
+      "description": "Account balances collection"
     }
   }
 }

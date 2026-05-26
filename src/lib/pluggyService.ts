@@ -378,6 +378,52 @@ export class PluggyService {
   }
 
   /**
+   * Fetches active accounts corresponding to the given Pluggy items, returning normalized models
+   */
+  public static async syncAccounts(apiKey: string, itemsList: PluggyItem[]): Promise<any[]> {
+    console.log(`[PluggyService Sync] Sincronizando saldos de contas de ${itemsList.length} itens.`);
+    const results: any[] = [];
+    
+    for (const item of itemsList) {
+      if (!item || !item.id) continue;
+      const itemTitle = item.connector?.name || item.provider?.name || `Item ${item.id}`;
+      
+      try {
+        const accountsData = await this.request(`/accounts?itemId=${item.id}`, {
+          headers: this.getHeaders(apiKey, ""),
+        });
+        const accounts = accountsData.results || [];
+        
+        for (const account of accounts) {
+          if (!account || !account.id) continue;
+          
+          results.push({
+            accountId: account.id,
+            itemId: item.id,
+            provider: 'pluggy',
+            bankName: item.connector?.name || item.provider?.name || itemTitle,
+            bankRawName: item.connector?.name || item.provider?.name || null,
+            accountName: account.name || 'Conta Corrente',
+            accountRawName: account.name || null,
+            accountLabel: account.marketingName || account.name || 'Conta de Depósito',
+            accountType: account.type, // e.g. BANK, CREDIT, LOAN
+            accountSubtype: account.subtype || null,
+            number: account.number || null,
+            balance: typeof account.balance === 'number' ? account.balance : 0,
+            currencyCode: account.currencyCode || 'BRL',
+            status: account.status || 'ACTIVE',
+            sourceRaw: itemTitle
+          });
+        }
+      } catch (err: any) {
+        console.warn(`[PluggyService Sync] Erro ao carregar saldos para o item ${item.id}:`, err.message);
+      }
+    }
+    
+    return results;
+  }
+
+  /**
    * Registers a new Webhook callback listener URL on Pluggy
    */
   public static async createWebhook(apiKey: string, event: string, url: string): Promise<any> {

@@ -308,3 +308,26 @@ export function classifyPluggyDirection(input: {
     shouldIgnoreInTotals: internal
   };
 }
+
+export function shouldIncludeInSaldoTotal(type: string, subtype?: string): { include: boolean; reason: string } {
+  const t = String(type || "").toUpperCase();
+  const s = String(subtype || "").toUpperCase();
+
+  if (t === "BANK") {
+    return { include: true, reason: "Conta bancária disponível" };
+  }
+
+  if (t === "PAYMENT_ACCOUNT" || s === "PAYMENT_ACCOUNT") {
+    return { include: true, reason: "Conta de pagamento/digital com saldo disponível" };
+  }
+
+  if (t === "CREDIT" || t === "CREDIT_CARD" || s === "CREDIT_CARD") {
+    return { include: false, reason: "Cartão de crédito não representa dinheiro disponível" };
+  }
+
+  if (t === "LOAN") {
+    return { include: false, reason: "Empréstimo/financiamento não representa saldo disponível" };
+  }
+
+  return { include: false, reason: "Ativo não correspondente a saldo de livre movimentação" };
+}

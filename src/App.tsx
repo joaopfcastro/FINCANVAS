@@ -66,6 +66,32 @@ export interface Transaction {
   shouldIgnoreInTotals?: boolean;
 }
 
+export interface AccountBalance {
+  id?: string;
+  userId: string;
+  provider: 'pluggy' | 'manual';
+  itemId?: string;
+  accountId: string;
+  bankName: string;
+  bankRawName?: string;
+  accountName: string;
+  accountRawName?: string;
+  accountLabel: string;
+  accountType: string;
+  accountSubtype?: string;
+  number?: string;
+  balance: number;
+  currencyCode?: string;
+  includeInSaldoTotal: boolean;
+  includeReason: string;
+  status?: string;
+  sourceRaw?: string;
+  lastSyncedAt: any;
+  createdAt: any;
+  updatedAt: any;
+  raw?: any;
+}
+
 type View = 'dashboard' | 'import' | 'reports' | 'settings';
 
 export default function App() {
@@ -73,6 +99,8 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loadingTransactions, setLoadingTransactions] = useState(true);
+  const [accountBalances, setAccountBalances] = useState<AccountBalance[]>([]);
+  const [loadingAccountBalances, setLoadingAccountBalances] = useState(true);
   const [loadingContext, setLoadingContext] = useState(true);
   const [activeView, setActiveView] = useState<View>('dashboard');
   const [authError, setAuthError] = useState('');
@@ -195,6 +223,34 @@ export default function App() {
       }, err => {
         setLoadingTransactions(false);
         handleFirestoreError(err, OperationType.LIST, 'transactions');
+      });
+    });
+    return () => {
+      if (unsubs) unsubs();
+    };
+  }, [user]);
+
+  useEffect(() => {
+    let unsubs: () => void;
+    if (!user) {
+      setAccountBalances([]);
+      setLoadingAccountBalances(false);
+      return;
+    }
+    setLoadingAccountBalances(true);
+    const colRef = collection(db, 'accountBalances');
+    import('firebase/firestore').then(({ query, where }) => {
+      const q = query(colRef, where('userId', '==', user.uid));
+      unsubs = onSnapshot(q, { includeMetadataChanges: true }, (snap) => {
+        if (snap.metadata.fromCache && snap.empty) {
+          return;
+        }
+        const balances = snap.docs.map(d => ({ id: d.id, ...d.data() } as AccountBalance));
+        setAccountBalances(balances);
+        setLoadingAccountBalances(false);
+      }, err => {
+        setLoadingAccountBalances(false);
+        handleFirestoreError(err, OperationType.LIST, 'accountBalances');
       });
     });
     return () => {
@@ -665,6 +721,7 @@ export default function App() {
             onNavigateImport={handleNavigateImport} 
             onOpenManualEntry={handleOpenManualEntry} 
             onEditTransaction={handleEditTransaction}
+            accountBalances={accountBalances}
           />
         )}
         {activeView === 'import' && <ImportView userId={user.uid} onNavigateDashboard={handleNavigateDashboard} profile={profile} />}
@@ -677,6 +734,7 @@ export default function App() {
             onEditTransaction={handleEditTransaction}
             onOpenManualEntry={handleOpenManualEntry}
             onNavigateImport={handleNavigateImport}
+            accountBalances={accountBalances}
           />
         )}
         {activeView === 'settings' && <SettingsView user={user} profile={profile} transactions={transactions} />}
