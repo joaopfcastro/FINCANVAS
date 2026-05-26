@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { doc, updateDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { UserProfile, Transaction } from '../App';
 import { User } from 'firebase/auth';
 import { 
   KeyRound, Eye, EyeOff, Check, Trash2, Loader2, Database, Info, 
-  CheckCircle2, ChevronRight, Key, RefreshCw, Radio, CreditCard, Link, Copy, AlertTriangle, ShieldCheck, ChevronDown, Settings2, Sliders, Play
+  CheckCircle2, ChevronRight, Key, RefreshCw, Radio, CreditCard, Link, Copy, AlertTriangle, ShieldCheck, ChevronDown, Settings2, Sliders, Play, Lock, CopyCheck
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
@@ -54,6 +54,110 @@ async function safeJsonClient(response: Response): Promise<any> {
   }
 }
 
+// --- SETUP STEP INTERFACE & RENDERING ---
+interface SetupStepProps {
+  number: number;
+  title: string;
+  description: string;
+  status: 'pending' | 'current' | 'completed' | 'attention';
+}
+
+const SetupStep = ({ number, title, description, status }: SetupStepProps) => {
+  const getStatusStyle = () => {
+    switch (status) {
+      case 'completed':
+        return {
+          bg: 'bg-emerald-50/70 border-emerald-200 dark:bg-emerald-950/20 dark:border-emerald-900/40',
+          badge: 'bg-emerald-500 text-white dark:bg-emerald-600',
+          text: 'text-slate-900 dark:text-slate-100 font-semibold',
+          desc: 'text-slate-500 dark:text-slate-400',
+          icon: <Check className="w-3.5 h-3.5 stroke-[3px]" />
+        };
+      case 'current':
+        return {
+          bg: 'bg-blue-50/70 border-blue-200 dark:bg-blue-950/20 dark:border-blue-900/40 ring-1 ring-blue-500/20',
+          badge: 'bg-blue-600 text-white',
+          text: 'text-blue-900 dark:text-blue-200 font-bold',
+          desc: 'text-blue-700/80 dark:text-blue-300/80',
+          icon: <span className="text-xs font-bold leading-none">{number}</span>
+        };
+      case 'attention':
+        return {
+          bg: 'bg-rose-50/70 border-rose-200 dark:bg-rose-950/20 dark:border-rose-900/40 animate-pulse',
+          badge: 'bg-rose-600 text-white',
+          text: 'text-rose-900 dark:text-rose-200 font-semibold',
+          desc: 'text-rose-700 dark:text-rose-300',
+          icon: <AlertTriangle className="w-3.5 h-3.5" />
+        };
+      default: // pending
+        return {
+          bg: 'bg-slate-50/50 border-slate-200 dark:bg-slate-900/20 dark:border-slate-800/60',
+          badge: 'bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400',
+          text: 'text-slate-400 dark:text-slate-500',
+          desc: 'text-slate-400/80 dark:text-slate-600',
+          icon: <span className="text-xs leading-none">{number}</span>
+        };
+    }
+  };
+
+  const style = getStatusStyle();
+
+  return (
+    <div className={`p-4 rounded-2xl border flex gap-3.5 items-start transition-all duration-200 ${style.bg}`}>
+      <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-xs font-bold ${style.badge}`}>
+        {style.icon}
+      </div>
+      <div className="space-y-1">
+        <h4 className={`text-xs uppercase tracking-wider ${style.text}`}>{title}</h4>
+        <p className={`text-[11px] leading-relaxed ${style.desc}`}>{description}</p>
+      </div>
+    </div>
+  );
+};
+
+// --- ADVANCED ACCORDION CONTAINER ---
+interface AdvancedAccordionProps {
+  title: string;
+  icon: React.ReactNode;
+  isOpen: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}
+
+const AdvancedAccordion = ({ title, icon, isOpen, onToggle, children }: AdvancedAccordionProps) => {
+  return (
+    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-xs transition-all duration-200">
+      <button
+        type="button"
+        className="w-full px-5 py-4 flex items-center justify-between text-left focus:outline-none cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors"
+        onClick={onToggle}
+      >
+        <div className="flex items-center gap-2.5">
+          <span className="text-slate-500 dark:text-slate-400">{icon}</span>
+          <span className="font-bold text-xs text-slate-700 dark:text-slate-300">{title}</span>
+        </div>
+        <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`} />
+      </button>
+
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: 'easeInOut' }}
+            className="overflow-hidden border-t border-slate-100 dark:border-slate-800"
+          >
+            <div className="p-5 space-y-4">
+              {children}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
 export function PluggySettingsPanel({ user, profile, transactions }: PluggySettingsPanelProps) {
   // --- LOCAL SYNCHRONIZED IDS (OPTIMISTIC STATE) ---
   const [localItemIds, setLocalItemIds] = useState<string[]>(profile.pluggyItemIds || []);
@@ -66,22 +170,34 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
   const [isSavingCustomKeys, setIsSavingCustomKeys] = useState(false);
   const [isPluggyConfiguredOnServer, setIsPluggyConfiguredOnServer] = useState(false);
   const [manualItemIdInput, setManualItemIdInput] = useState('');
+  const [showManualForm, setShowManualForm] = useState(false);
   const [isLoadingConnect, setIsLoadingConnect] = useState(false);
   const [isTestingPluggy, setIsTestingPluggy] = useState(false);
   const [isSyncingPluggy, setIsSyncingPluggy] = useState(false);
   const [pluggySyncStep, setPluggySyncStep] = useState('');
   const [pluggyItems, setPluggyItems] = useState<any[]>([]);
   const [isLoadingItems, setIsLoadingItems] = useState(false);
+  
+  // Advanced Accordions Collapsed states (All off by default)
+  const [isCredentialsOpen, setIsCredentialsOpen] = useState(false);
+  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
+  const [isWebhooksOpen, setIsWebhooksOpen] = useState(false);
+
+  // Auto-scrolling ref to keys setup
+  const credentialsRef = useRef<HTMLDivElement>(null);
+
+  // --- DIAGNOSTICS & WEBHOOKS STATE ---
   const [diagnoseSteps, setDiagnoseSteps] = useState<any[] | null>(null);
   const [diagnoseLogs, setDiagnoseLogs] = useState<string[]>([]);
   const [copiedStates, setCopiedStates] = useState<Record<string, boolean>>({});
+  const [pluggyWebhooks, setPluggyWebhooks] = useState<any[]>([]);
+  const [isLoadingWebhooks, setIsLoadingWebhooks] = useState(false);
+  const [webhookUrl, setWebhookUrl] = useState('');
+  const [isRegisteringWebhook, setIsRegisteringWebhook] = useState(false);
+  const [capturedEvents, setCapturedEvents] = useState<any[]>([]);
+  const [isLoadingEvents, setIsLoadingEvents] = useState(false);
 
-  // Collapsed Sections Default
-  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
-  const [isWebhooksOpen, setIsWebhooksOpen] = useState(true);
-  const [isCredentialsFormOpen, setIsCredentialsFormOpen] = useState(false);
-
-  // --- CUSTOM DIALOG/CONFIRM MODALS (Removes iframe window.confirm blocking) ---
+  // Custom modal configuration
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
     title: string;
@@ -91,15 +207,7 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
     onConfirm: () => void;
   } | null>(null);
 
-  // --- WEBHOOKS STATE (FETCHED ONLY ON DEMAND) ---
-  const [pluggyWebhooks, setPluggyWebhooks] = useState<any[]>([]);
-  const [isLoadingWebhooks, setIsLoadingWebhooks] = useState(false);
-  const [webhookUrl, setWebhookUrl] = useState('');
-  const [isRegisteringWebhook, setIsRegisteringWebhook] = useState(false);
-  const [capturedEvents, setCapturedEvents] = useState<any[]>([]);
-  const [isLoadingEvents, setIsLoadingEvents] = useState(false);
-
-  // Sync parent pluggyItemIds into our local optimistic array
+  // Sync parent pluggyItemIds into local optimistic array
   useEffect(() => {
     if (profile.pluggyItemIds) {
       setLocalItemIds(profile.pluggyItemIds);
@@ -142,6 +250,14 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
     return !!(headers['x-pluggy-client-id'] && headers['x-pluggy-client-secret']);
   };
   const hasPluggyKeys = isPluggyConfiguredOnServer || checkHasPluggyKeys();
+
+  // Handle open credentials accordion smoothly
+  const handleFocusCredentialsSetup = () => {
+    setIsCredentialsOpen(true);
+    setTimeout(() => {
+      credentialsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 150);
+  };
 
   // --- COPY UTILITY ---
   const copyToClipboard = (text: string, key: string) => {
@@ -193,7 +309,7 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
       }
 
       toast.success('Credenciais salvas com sucesso!');
-      setIsCredentialsFormOpen(false);
+      setIsCredentialsOpen(false);
       await loadPluggyItems();
     } catch (err) {
       console.error(err);
@@ -228,7 +344,7 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
           setPluggyClientSecret('');
           toast.success('Chaves de API removidas com sucesso.');
           setPluggyItems([]);
-          setIsCredentialsFormOpen(false);
+          setIsCredentialsOpen(false);
         } catch (err) {
           console.error(err);
           toast.error('Falha ao remover chaves.');
@@ -286,7 +402,7 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
                 const currentItemIds = profile.pluggyItemIds || [];
                 if (!currentItemIds.includes(itemId)) {
                   const updatedIds = [...currentItemIds, itemId];
-                  setLocalItemIds(updatedIds); // instant feed update
+                  setLocalItemIds(updatedIds);
                   await updateDoc(doc(db, 'users', user.uid), {
                     pluggyItemIds: updatedIds,
                     updatedAt: serverTimestamp()
@@ -358,7 +474,7 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
       
       if (res.ok && data.success) {
         toast.success('Par de credenciais Pluggy testado e validado com sucesso!');
-        setIsDiagnosticsOpen(true); // reveal results
+        setIsDiagnosticsOpen(true);
         await loadPluggyItems();
       } else {
         toast.error(data.error || 'Falha no diagnóstico das chaves Pluggy.');
@@ -406,13 +522,14 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
       }
 
       const updatedIds = [...localItemIds, rawId];
-      setLocalItemIds(updatedIds); // optimistic local update
+      setLocalItemIds(updatedIds);
 
       await updateDoc(doc(db, 'users', user.uid), {
         pluggyItemIds: updatedIds,
         updatedAt: serverTimestamp()
       });
       setManualItemIdInput('');
+      setShowManualForm(false);
       toast.dismiss('validate-item');
       toast.success(`Conexão (${valData.item?.connector || 'Pluggy'}) vinculada com sucesso!`);
       await loadPluggyItems();
@@ -423,7 +540,7 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
     }
   };
 
-  // --- UNIFIED DESVINCULAR (REMOVER DO FINCANVAS - GUARANTEED OPTIMISTIC SUCCESS) ---
+  // --- UNIFY DISCONNECT ---
   const handleRemoveManualItemId = async (idPost: string, silent = false) => {
     if (silent) {
       await executeRemoveManualItemId(idPost);
@@ -433,7 +550,7 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
     setConfirmModal({
       isOpen: true,
       title: 'Desvincular Conexão?',
-      description: 'Tem certeza que deseja desvincular a conexão do FINCANVAS? Suas transações importadas serão mantidas, mas nenhum novo sincronismo será realizado para esse ID.',
+      description: 'Tem certeza que deseja desvincular esta conta integrada do FINCANVAS? Seus lançamentos históricos de extratos já importados serão mantidos intactos, mas novas importações não serão possíveis para esta conta bancária.',
       actionLabel: 'Desvincular',
       actionType: 'danger',
       onConfirm: async () => {
@@ -444,7 +561,6 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
   };
 
   const executeRemoveManualItemId = async (idPost: string) => {
-    // Immediate optimistic state update
     const updated = localItemIds.filter((item: string) => item !== idPost);
     setLocalItemIds(updated);
     setPluggyItems(prev => prev.filter(item => item.id !== idPost));
@@ -454,10 +570,10 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
         pluggyItemIds: updated,
         updatedAt: serverTimestamp()
       });
-      toast.success('Conexão desvinculada com sucesso!');
+      toast.success('Conexão removida com sucesso!');
     } catch (err: any) {
       console.error(err);
-      toast.error('Erro ao salvar alteração. Restaurando estado prévio.');
+      toast.error('Erro ao salvar alteração. Restaurando conexões prévias.');
       setLocalItemIds(profile.pluggyItemIds || []);
       await loadPluggyItems();
     }
@@ -564,7 +680,6 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
 
       setPluggySyncStep(`Organizando com Inteligência Artificial. Gravando ${filterToInsert.length} transações...`);
 
-      const colRef = doc(db, 'users', user.uid);
       const transactionsCollectionRef = doc(db, 'transactions', 'dummy').parent;
 
       for (const itemToSave of filterToInsert) {
@@ -594,7 +709,7 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
     }
   };
 
-  // --- WEBHOOK CLIENT METHODS (CALLED ONLY WHEN WEBHOOK ACCORDION IS EXPLICITLY EXPANDED) ---
+  // --- WEBHOOK CLIENT METHODS ---
   const loadPluggyWebhooks = async () => {
     if (!hasPluggyKeys) return;
     setIsLoadingWebhooks(true);
@@ -748,757 +863,820 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
     };
   });
 
+  // Unique status badge calculations
+  const renderStatusBadge = () => {
+    if (!hasPluggyKeys) {
+      return (
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-full text-xs font-semibold dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/40">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+          Credenciais pendentes
+        </span>
+      );
+    }
+    if (hasOutdatedItems) {
+      return (
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-rose-50 text-rose-700 border border-rose-200 rounded-full text-xs font-semibold dark:bg-rose-950/20 dark:text-rose-400 dark:border-rose-900/40 animate-pulse">
+          <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+          Ação necessária
+        </span>
+      );
+    }
+    if (isAwaitingItemIds) {
+      return (
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full text-xs font-semibold dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900/40">
+          <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
+          Pronto para conectar
+        </span>
+      );
+    }
+    if (isSyncingPluggy) {
+      return (
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full text-xs font-semibold dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900/40 animate-pulse">
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-500" />
+          Sincronizando
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full text-xs font-semibold dark:bg-emerald-950/20 dark:text-emerald-400 dark:border-emerald-900/40">
+        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+        Sincronizado
+      </span>
+    );
+  };
+
   return (
     <div className="space-y-6 w-full max-w-7xl mx-auto pb-12 font-sans overflow-x-hidden">
       
-      {/* HEADER SECTION */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-5">
+      {/* 1. CLEAN HEADER */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-5">
         <div>
           <h2 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
             <CreditCard className="w-6 h-6 text-emerald-500 shrink-0" />
-            Integração Bancária
+            Integração bancária
           </h2>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1 max-w-2xl leading-relaxed">
-            Sincronize transações de forma automática utilizando a tecnologia oficial do <strong>Pluggy Connect</strong>.
+          <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1 max-w-2xl leading-relaxed">
+            Conecte suas contas pelo Meu Pluggy e sincronize lançamentos automaticamente.
           </p>
         </div>
-        
-        {/* GLOBAL BADGE */}
-        <div className="flex shrink-0">
-          {!hasPluggyKeys ? (
-            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/40">
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
-              Credenciais Ausentes
-            </span>
-          ) : hasOutdatedItems ? (
-            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-950/20 dark:text-rose-404 dark:border-rose-905/40 animate-pulse">
-              <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-              Ação Requerida (Reconectar)
-            </span>
-          ) : isAwaitingItemIds ? (
-            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900/40">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
-              Aguardando Conexão
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/20 dark:text-emerald-400 dark:border-emerald-900/40">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-              Conexão Ativa
-            </span>
-          )}
+        <div className="flex shrink-0 self-start sm:self-center">
+          {renderStatusBadge()}
         </div>
       </div>
 
-      {/* MISSING SECRETS ALERT BANNER */}
-      {!hasPluggyKeys && (
-        <div id="missing-secrets-alert" className="bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-950/15 dark:to-orange-950/15 p-5 rounded-2xl border border-amber-200 dark:border-amber-900/30 flex flex-col md:flex-row gap-4 items-start md:items-center transition-all">
-          <div className="bg-amber-100 dark:bg-amber-905/30 text-amber-600 dark:text-amber-400 p-3 rounded-xl shrink-0">
-            <AlertTriangle className="w-5 h-5" />
+      {/* 2. CARD PRINCIPAL: CONFIGURAÇÃO DO MEU PLUGGY */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-sm space-y-5">
+        <div>
+          <h3 className="font-bold text-sm text-slate-800 dark:text-slate-200 flex items-center gap-2">
+            <Sliders className="w-4 h-4 text-emerald-500" />
+            Configuração do Meu Pluggy
+          </h3>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+            Acompanhe o fluxo de ativação simples para liberar a consolidação automática.
+          </p>
+        </div>
+
+        {/* GUIDED STEPS TIMELINE WRAPPER (Responsive: Row on desktop, Stacked on mobile) */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <SetupStep
+            number={1}
+            title="Etapa 1: Credenciais"
+            description={hasPluggyKeys ? "Credenciais salvas e operacionais no servidor." : "Ponto de acesso API e chaves cadastrais do Pluggy pendentes."}
+            status={hasPluggyKeys ? "completed" : "current"}
+          />
+          <SetupStep
+            number={2}
+            title="Etapa 2: Conta bancária"
+            description={
+              !hasPluggyKeys ? "Aguardando definição das chaves cadastrais." :
+              isAwaitingItemIds ? "Pronto para vincular as primeiras contas." :
+              hasOutdatedItems ? "Contas vinculadas precisam de atenção imediata." : "Contas vinculadas com sucesso à sua dashboard."
+            }
+            status={
+              !hasPluggyKeys ? "pending" :
+              isAwaitingItemIds ? "current" :
+              hasOutdatedItems ? "attention" : "completed"
+            }
+          />
+          <SetupStep
+            number={3}
+            title="Etapa 3: Sincronização"
+            description={
+              isAwaitingItemIds ? "Aguardando vinculação ativa de uma conta principal." :
+              isSyncingPluggy ? "Executando carga e classificação dinâmica por Inteligência Artificial." : "Lançamentos e extratos prontos para sincronismo."
+            }
+            status={
+              (!hasPluggyKeys || isAwaitingItemIds) ? "pending" :
+              isSyncingPluggy ? "current" : "completed"
+            }
+          />
+        </div>
+      </div>
+
+      {/* 3. CARD PRINCIPAL CONTEXTUAL (SAVES CLUTTER) */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
+        
+        {/* CASE A: NO CREDENTIALS CONFIGURED */}
+        {!hasPluggyKeys && (
+          <div className="space-y-4">
+            <div className="flex gap-4 items-start">
+              <div className="bg-amber-50 dark:bg-amber-950/20 text-amber-600 dark:text-amber-400 p-3 rounded-2xl shrink-0">
+                <AlertTriangle className="w-6 h-6 animate-pulse" />
+              </div>
+              <div className="space-y-1">
+                <h4 className="font-bold text-sm text-slate-900 dark:text-slate-150">Passo 1: Chaves cadastrais necessárias</h4>
+                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                  Para habilitar qualquer sincronismo, você precisa cadastrar as credenciais do Pluggy no sistema. Obtenha chaves de desenvolvimento gratuitas acessando o console de parceiros.
+                </p>
+              </div>
+            </div>
+            
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={handleFocusCredentialsSetup}
+                className="w-full sm:w-auto h-11 px-6 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]"
+              >
+                <Key className="w-4 h-4" />
+                <span>Adicionar credenciais da Pluggy</span>
+              </button>
+            </div>
           </div>
-          <div className="space-y-1">
-            <h4 className="font-bold text-sm text-amber-900 dark:text-amber-400">Servidor de Integração pendente de Chaves</h4>
-            <p className="text-xs text-amber-700 dark:text-amber-300 leading-relaxed">
-              Para liberar o sincronismo e integrar suas contas, é necessário fornecer suas chaves cadastrais do Pluggy.
+        )}
+
+        {/* CASE B: CREDENTIALS OK, BUT NO ACCOUNTS CONNECTED */}
+        {hasPluggyKeys && isAwaitingItemIds && (
+          <div className="space-y-4">
+            <div className="flex gap-4 items-start">
+              <div className="bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 p-4 rounded-xl shrink-0">
+                <Link className="w-5 h-5 animate-spin-slow" />
+              </div>
+              <div className="space-y-1 flex-1">
+                <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">Passo 2: Vincule sua primeira conta bancária</h4>
+                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                  Suas credenciais cadastrais estão corretas! Use o painel blindado e seguro do <strong>Pluggy Connect</strong> para vincular sua instituição financeira.
+                </p>
+              </div>
+            </div>
+
+            <div className="pt-2 space-y-3">
+              <button
+                type="button"
+                onClick={() => handleOpenPluggyConnect()}
+                disabled={isLoadingConnect}
+                className="w-full h-11 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] md:w-auto md:px-6"
+              >
+                {isLoadingConnect ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-200 animate-pulse" />
+                )}
+                <span>Conectar conta pelo Meu Pluggy</span>
+              </button>
+
+              {/* Discreet Manual entry toggle */}
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowManualForm(!showManualForm)}
+                  className="text-xs text-slate-400 hover:text-emerald-600 font-bold transition-colors underline cursor-pointer"
+                >
+                  {showManualForm ? "Ocultar entrada manual" : "Já tenho um Item ID existencial (Avançado)"}
+                </button>
+              </div>
+
+              {/* Expansible input uuid */}
+              <AnimatePresence>
+                {showManualForm && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.15 }}
+                    className="overflow-hidden bg-slate-50 dark:bg-slate-950 p-4 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3 max-w-xl"
+                  >
+                    <div className="space-y-1">
+                      <label htmlFor="manual_uuid" className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block">UUID do Item ID da Pluggy</label>
+                      <div className="flex gap-2">
+                        <input
+                          id="manual_uuid"
+                          type="text"
+                          value={manualItemIdInput}
+                          onChange={(e) => setManualItemIdInput(e.target.value)}
+                          placeholder="Ex: 88fa38cc-a3bf-4874-9582-12efea85a9bc"
+                          className="flex-1 bg-white dark:bg-black text-slate-850 dark:text-slate-100 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-emerald-500 h-10 w-full"
+                          autoComplete="off"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleSaveManualItemId}
+                          className="h-10 px-4 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer shrink-0"
+                        >
+                          Vincular ID
+                        </button>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
+        )}
+
+        {/* CASE C: ACCOUNTS CONNECTED - MAIN SYNC CONTEXT */}
+        {hasPluggyKeys && !isAwaitingItemIds && (
+          <div className="space-y-4">
+            <div className="flex gap-4 items-start">
+              <div className="bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 p-4 rounded-xl shrink-0">
+                <RefreshCw className={`w-5 h-5 ${isSyncingPluggy ? 'animate-spin' : ''}`} />
+              </div>
+              <div className="space-y-1 flex-1">
+                <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">Passo 3: Sincronize suas transações</h4>
+                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                  Contas vinculadas operacionais no FINCANVAS. Sincronize os dados com segurança para importar os últimos 30 dias de extratos categorizados com Inteligência Artificial.
+                </p>
+              </div>
+            </div>
+
+            {pluggySyncStep && (
+              <div className="bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-slate-800 p-3.5 rounded-xl text-xs font-mono text-emerald-600 dark:text-emerald-400 flex items-center leading-relaxed">
+                {isSyncingPluggy && <Loader2 className="w-4 h-4 mr-2.5 animate-spin text-emerald-500" />}
+                <span>{pluggySyncStep}</span>
+              </div>
+            )}
+
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={handleSyncPluggyTransactions}
+                disabled={isSyncingPluggy}
+                className="w-full h-11 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98] md:w-auto md:px-6"
+              >
+                {isSyncingPluggy ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-white" />
+                    <span>Sincronizando transações...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5 fill-current text-emerald-200" />
+                    <span>Sincronizar transações agora</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 4. CARD 3: CONTAS VINCULADAS */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
+        <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+          <h3 className="font-bold text-sm text-slate-800 dark:text-slate-200 flex items-center gap-2">
+            <Database className="w-4.5 h-4.5 text-emerald-500 shrink-0" />
+            Contas vinculadas ({localItemIds.length})
+          </h3>
+          {localItemIds.length > 0 && (
+            <button
+              type="button"
+              onClick={loadPluggyItems}
+              disabled={isLoadingItems}
+              className="text-xs font-bold text-emerald-600 hover:text-emerald-700 disabled:opacity-40 flex items-center gap-1.5 cursor-pointer py-1.5 px-3 hover:bg-slate-50 dark:hover:bg-slate-800/60 rounded-lg transition-colors"
+            >
+              {isLoadingItems ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+              <span>Atualizar status</span>
+            </button>
+          )}
+        </div>
+
+        {/* LOADING & EMPTY CONNECTIONS */}
+        {isLoadingItems && localItemIds.length > 0 && pluggyItems.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-slate-400 gap-3">
+            <Loader2 className="w-7 h-7 animate-spin text-emerald-500" />
+            <span className="text-xs">Carregando detalhes das conexões no servidor...</span>
+          </div>
+        ) : localItemIds.length === 0 ? (
+          <div className="py-12 text-center bg-slate-50/50 dark:bg-black/20 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl space-y-3">
+            <p className="font-bold text-xs text-slate-700 dark:text-slate-350">Nenhuma conta integrada conectada</p>
+            <p className="text-[11px] text-slate-400 max-w-sm mx-auto leading-relaxed">
+              Vincule sua primeira instituição bancária para começar a monitorar seus extratos automaticamente!
             </p>
           </div>
-          <button 
-            type="button"
-            onClick={() => setIsCredentialsFormOpen(true)}
-            className="md:ml-auto w-full md:w-auto px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all shrink-0 active:scale-[0.98]"
-            aria-label="Configurar chaves"
-          >
-            Adicionar Credenciais
-          </button>
-        </div>
-      )}
+        ) : (
+          <div className="space-y-3">
+            {unifiedConnections.map((conn) => {
+              const matchesError = ["OUTDATED", "LOGIN_ERROR", "NEEDS_RECONNECT"].includes(conn.status);
+              
+              const colorMaps: Record<string, string> = {
+                UPDATED: 'bg-emerald-50 text-emerald-700 border-emerald-100 dark:bg-emerald-950/20 dark:text-emerald-400 dark:border-emerald-900/40',
+                UPDATING: 'bg-blue-50 text-blue-700 border-blue-100 dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900/40',
+                OUTDATED: 'bg-amber-50 text-amber-700 border-amber-150 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/40 animate-pulse',
+                LOGIN_ERROR: 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/20 dark:text-rose-450 dark:border-rose-900/4 dark:border-rose-900/40',
+                PENDING_REGISTRATION: 'bg-slate-50 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700',
+              };
 
-      {/* MAIN TWO-COLUMN RESPONSIVE LAYOUT */}
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6 items-start">
-        
-        {/* LEFT COLUMN: CORE FUNCTIONAL ACTIONS */}
-        <div className="space-y-6 min-w-0">
-          
-          {/* SEC_1: CONNECT ACCOUNT VIA PLUGGY CONNECT */}
-          {hasPluggyKeys && (
-            <div id="pluggy-connect-card" className="bg-white dark:bg-slate-900 border border-slate-205 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
-              <div className="flex gap-4">
-                <div className="bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 p-3 rounded-xl shrink-0 h-fit">
-                  <Link className="w-5 h-5" />
+              const statusHumanLabel: Record<string, string> = {
+                UPDATED: 'Sincronizada',
+                UPDATING: 'Atualizando',
+                OUTDATED: 'Precisa reconectar',
+                LOGIN_ERROR: 'Erro de login',
+                PENDING_REGISTRATION: 'ID salvo',
+              };
+
+              return (
+                <div 
+                  key={conn.id}
+                  className="p-4 bg-slate-50/40 dark:bg-black/30 border border-slate-200 dark:border-slate-800 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-all"
+                >
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    {conn.imageUrl ? (
+                      <img 
+                        src={conn.imageUrl} 
+                        alt={conn.name} 
+                        className="w-10 h-10 object-contain rounded-xl bg-white dark:bg-slate-800 p-1.5 border border-slate-200 dark:border-slate-700 shrink-0 shadow-2xs" 
+                        referrerPolicy="no-referrer" 
+                      />
+                    ) : (
+                      <div className="w-10 h-10 bg-slate-200 dark:bg-slate-800 rounded-xl flex items-center justify-center font-bold text-slate-500 dark:text-slate-400 text-xs shrink-0">
+                        {conn.name?.[0]?.toUpperCase() || 'B'}
+                      </div>
+                    )}
+                    <div className="min-w-0 space-y-1">
+                      <h4 className="font-bold text-xs text-slate-800 dark:text-slate-200 truncate pr-2">
+                        {conn.name}
+                      </h4>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-slate-400 font-mono" title={conn.id}>
+                          ID: {conn.id.substring(0, 8)}...{conn.id.substring(conn.id.length - 8)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(conn.id, `itemid-${conn.id}`)}
+                          className="p-1 hover:bg-slate-150 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 rounded-md transition-colors shrink-0 cursor-pointer"
+                          aria-label={`Copiar Item ID ${conn.id}`}
+                        >
+                          {copiedStates[`itemid-${conn.id}`] ? (
+                            <Check className="w-3.5 h-3.5 text-emerald-500" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Actions & humanized badge */}
+                  <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 border-t border-slate-100 dark:border-slate-800/60 pt-3 sm:pt-0 sm:border-0">
+                    <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold border shrink-0 uppercase tracking-wider ${colorMaps[conn.status] || 'bg-slate-100 text-slate-600 border-slate-200/60 dark:bg-slate-800'}`}>
+                      {statusHumanLabel[conn.status] || conn.status}
+                    </span>
+
+                    <div className="flex items-center gap-2">
+                      {matchesError && (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenPluggyConnect(conn.id)}
+                          className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-[10px] rounded-lg transition-all shadow-xs cursor-pointer"
+                        >
+                          Reconectar
+                        </button>
+                      )}
+                      
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveManualItemId(conn.id)}
+                        className="p-1.5 text-rose-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/15 rounded-xl transition-colors cursor-pointer shrink-0"
+                        title="Desvincular do FINCANVAS"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* 5. CARD 4: SINCRONIZAÇÃO */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
+        <h3 className="font-bold text-sm text-slate-800 dark:text-slate-200 flex items-center gap-2 border-b border-slate-100 dark:border-slate-850 pb-3">
+          <RefreshCw className="w-4.5 h-4.5 text-emerald-500" />
+          Sincronização
+        </h3>
+
+        {localItemIds.length === 0 ? (
+          <div className="py-4 text-center text-xs text-slate-400 italic">
+            Conecte uma conta primeiro nas etapas acima para poder operar os sincronismos.
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {/* Visual indicators row */}
+            <div className="grid grid-cols-3 gap-3 bg-slate-50/50 dark:bg-black/20 border border-slate-150 dark:border-slate-800 p-4 rounded-xl text-center text-xs font-mono">
+              <div>
+                <span className="text-slate-400 block text-[9px] uppercase tracking-wider font-bold">Conexões</span>
+                <span className="text-slate-800 dark:text-slate-100 font-bold text-sm mt-1 block">{localItemIds.length}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[9px] uppercase tracking-wider font-bold">Janela</span>
+                <span className="text-slate-805 dark:text-slate-100 font-bold text-sm mt-1 block">Últimos 30 dias</span>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[9px] uppercase tracking-wider font-bold">Estado</span>
+                <span className={`font-bold text-sm mt-1 block ${hasOutdatedItems ? 'text-amber-500' : 'text-emerald-500'}`}>
+                  {hasOutdatedItems ? 'Reconectar' : 'Operacional'}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed leading-normal">
+              A sincronização automática coleta seus extratos, descarta registros duplicados e aplica identificadores automáticos em poucos segundos.
+            </p>
+
+            <button
+              type="button"
+              onClick={handleSyncPluggyTransactions}
+              disabled={isSyncingPluggy}
+              className="w-full h-11 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]"
+            >
+              {isSyncingPluggy ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Sincronizando transações...</span>
+                </>
+              ) : (
+                <>
+                  <Play className="w-3.5 h-3.5 fill-current text-white/80" />
+                  <span>Sincronizar transações agora</span>
+                </>
+              )}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* 6. AVANÇADO (CLOSED COLLAPSED ACCORDIONS BY DEFAULT) */}
+      <div className="space-y-4 pt-4 border-t border-slate-100 dark:border-slate-800">
+        <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest pl-1">Avançado</h4>
+
+        {/* Accordion 1 - Detalhes das Credenciais */}
+        <div ref={credentialsRef}>
+          <AdvancedAccordion
+            title="Detalhes das credenciais"
+            icon={<ShieldCheck className="w-4.5 h-4.5" />}
+            isOpen={isCredentialsOpen}
+            onToggle={() => setIsCredentialsOpen(!isCredentialsOpen)}
+          >
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed font-sans mb-3">
+              Monitore se os pares de chaves estão salvos no servidor de back-end. Você pode optar por salvá-las na nuvem NoSQL ou no armazenamento local do seu navegador.
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 border border-slate-100 dark:border-slate-800 p-4 rounded-xl bg-slate-50/30 dark:bg-black/10">
+              <div className="space-y-1.5 text-xs font-mono">
+                <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-1.5 pt-1">
+                  <span className="text-slate-400">Chaves de produção:</span>
+                  <span className={`font-bold ${isPluggyConfiguredOnServer ? 'text-emerald-600' : 'text-slate-450'}`}>
+                    {isPluggyConfiguredOnServer ? 'Definidas (Servidor)' : 'Ausente'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-1.5 pt-1">
+                  <span className="text-slate-400">Chaves do perfil:</span>
+                  <span className={`font-bold ${checkHasPluggyKeys() ? 'text-emerald-600' : 'text-amber-500'}`}>
+                    {checkHasPluggyKeys() ? 'Cadastradas' : 'Não cadastradas'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-slate-400">Gateway SDK base:</span>
+                  <span className="text-[10px] bg-slate-150 dark:bg-slate-800 px-1.5 py-0.5 rounded font-bold text-slate-600 dark:text-slate-300">
+                    Pluggy V2 API
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2 justify-center">
+                <button
+                  type="button"
+                  onClick={handleTestPluggyKeys}
+                  disabled={isTestingPluggy || !hasPluggyKeys}
+                  className="w-full h-10 px-4 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-45"
+                >
+                  {isTestingPluggy ? <Loader2 className="w-4 h-4 animate-spin text-white" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                  <span>Testar comunicação das chaves</span>
+                </button>
+              </div>
+            </div>
+
+            {/* FORM PARA EDIÇÃO DE CHAVES */}
+            <form onSubmit={handleSaveCustomKeys} className="space-y-4 pt-3 border-t border-slate-100 dark:border-slate-800">
+              <p className="text-[11px] text-slate-400 leading-normal">
+                Você pode obter chaves de desenvolvimento gratuitas no painel de desenvolvedores da Pluggy (<strong>developer.pluggy.ai</strong>).
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label htmlFor="pluggy_id_form" className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">Client ID</label>
+                  <input
+                    id="pluggy_id_form"
+                    type="text"
+                    value={pluggyClientId}
+                    onChange={(e) => setPluggyClientId(e.target.value)}
+                    placeholder="Chave pública Pluggy Client"
+                    className="w-full h-10 bg-slate-50 dark:bg-black text-slate-850 dark:text-slate-100 border border-slate-200 dark:border-slate-705 border-slate-200 dark:border-slate-800 rounded-lg px-3 py-2 text-xs font-mono focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                    autoComplete="off"
+                  />
                 </div>
                 <div className="space-y-1">
-                  <h3 className="font-bold text-sm text-slate-800 dark:text-slate-200">Conectar conta bancária de forma rápida</h3>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                    Clique no botão abaixo para escolher sua instituição financeira. As credenciais de acesso são processadas de forma blindada pela infraestrutura da Pluggy.
-                  </p>
-                </div>
-              </div>
-
-              <div className="pt-2">
-                <button
-                  type="button"
-                  onClick={() => handleOpenPluggyConnect()}
-                  disabled={isLoadingConnect}
-                  className="w-full h-11 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]"
-                  aria-busy={isLoadingConnect}
-                >
-                  {isLoadingConnect ? (
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                  ) : (
-                    <CheckCircle2 className="w-4 h-4 text-emerald-250 animate-pulse" />
-                  )}
-                  <span>Conectar conta integrada agora</span>
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* SEC_2: ALTERNATIVE MANUAL ITEM ID */}
-          {hasPluggyKeys && (
-            <div id="manual-item-card" className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-805 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
-              <div className="flex gap-4 flex-col sm:flex-row">
-                <div className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-450 p-3 rounded-xl shrink-0 h-fit w-fit">
-                  <Sliders className="w-5 h-5 text-emerald-600 dark:text-emerald-450" />
-                </div>
-                <div className="space-y-1 flex-1">
-                  <h3 className="font-bold text-sm text-slate-800 dark:text-slate-200">Vincular ID Existente Manualmente</h3>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                    Já possui um ID criado no console do desenvolvedor da Pluggy? Insira-o abaixo para cadastrar.
-                  </p>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <div className="flex-grow">
-                    <label htmlFor="manual_item_uuid_input" className="sr-only">UUID de Conexão da Pluggy</label>
+                  <label htmlFor="pluggy_secret_form" className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">Client Secret</label>
+                  <div className="relative">
                     <input
-                      id="manual_item_uuid_input"
-                      type="text"
-                      value={manualItemIdInput}
-                      onChange={(e) => setManualItemIdInput(e.target.value)}
-                      placeholder="Ex: 88fa38cc-a3bf-4874-9582-12efea85a9bc"
-                      className="w-full bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:bg-white h-11"
+                      id="pluggy_secret_form"
+                      type={showClientSecret ? 'text' : 'password'}
+                      value={pluggyClientSecret}
+                      onChange={(e) => setPluggyClientSecret(e.target.value)}
+                      placeholder="Chave secreta obtida no painel"
+                      className="w-full h-10 bg-slate-50 dark:bg-black text-slate-850 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-lg pl-3 pr-10 py-2 text-xs font-mono focus:ring-1 focus:ring-emerald-500 focus:outline-none"
                       autoComplete="off"
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowClientSecret(!showClientSecret)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    >
+                      {showClientSecret ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleSaveManualItemId}
-                    className="h-11 px-5 bg-slate-800 hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600 text-white font-bold text-xs rounded-xl transition-colors shrink-0 active:scale-[0.98] w-full sm:w-auto cursor-pointer"
-                  >
-                    Vincular Item ID
-                  </button>
                 </div>
               </div>
-            </div>
-          )}
 
-          {/* SEC_3: THE UNIFIED CONNECTIONS LIST */}
-          {hasPluggyKeys && (
-            <div id="unified-connections-card" className="bg-white dark:bg-slate-900 border border-slate-202 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-50 dark:border-slate-805 pb-3">
-                <h3 className="font-bold text-sm text-slate-805 dark:text-slate-200 flex items-center gap-2">
-                  <Database className="w-4.5 h-4.5 text-emerald-500" />
-                  Conexões vinculadas ({localItemIds.length})
-                </h3>
+              {/* Persistência de chaves */}
+              <div className="bg-slate-50/50 dark:bg-slate-950 p-3 rounded-xl border border-slate-200 dark:border-slate-805 space-y-1.5">
+                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Local de salvamento das chaves</span>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-1.5 text-xs text-slate-650 dark:text-slate-400 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="storeMethod"
+                      checked={storageMethod === 'cloud'}
+                      onChange={() => setStorageMethod('cloud')}
+                      className="text-emerald-600 focus:ring-emerald-500 shrink-0"
+                    />
+                    <span>Nuvem (Salvar no Firestore de forma protegida)</span>
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs text-slate-650 dark:text-slate-400 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="storeMethod"
+                      checked={storageMethod === 'local'}
+                      onChange={() => setStorageMethod('local')}
+                      className="text-emerald-600 focus:ring-emerald-500 shrink-0"
+                    />
+                    <span>Local (Salvar somente no seu navegador)</span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-3 pt-1">
+                <button
+                  type="submit"
+                  disabled={isSavingCustomKeys}
+                  className="px-5 h-10 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-colors active:scale-[0.98]"
+                >
+                  {isSavingCustomKeys ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                  <span>Salvar chaves cadastrais</span>
+                </button>
+
+                {(profile.pluggyClientId || localStorage.getItem('PREF_PLUGGY_CLIENT_ID')) && (
+                  <button
+                    type="button"
+                    onClick={handleRemoveCustomKeys}
+                    disabled={isSavingCustomKeys}
+                    className="px-5 h-10 hover:bg-rose-50 dark:hover:bg-rose-950/20 text-rose-600 font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Apagar chaves cadastradas</span>
+                  </button>
+                )}
+              </div>
+            </form>
+          </AdvancedAccordion>
+        </div>
+
+        {/* Accordion 2 - Diagnóstico técnico */}
+        <AdvancedAccordion
+          title="Diagnóstico técnico"
+          icon={<Sliders className="w-4.5 h-4.5" />}
+          isOpen={isDiagnosticsOpen}
+          onToggle={() => setIsDiagnosticsOpen(!isDiagnosticsOpen)}
+        >
+          <div className="space-y-4">
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-normal">
+              Execute testes de handshakes com os endpoints do barramento da API do Pluggy para checar se há chaves expiradas ou conexões inválidas.
+            </p>
+
+            {diagnoseSteps ? (
+              <div className="space-y-3.5 bg-slate-900 border border-slate-800 p-4 rounded-xl text-slate-100">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                  <span className="text-[10px] font-bold uppercase text-slate-405 text-slate-400">Status dos testes da API</span>
+                  <button
+                    type="button"
+                    onClick={() => { setDiagnoseSteps(null); setDiagnoseLogs([]); }}
+                    className="text-[9px] text-slate-400 hover:text-white underline cursor-pointer"
+                  >
+                    Resetar
+                  </button>
+                </div>
+
+                <div className="space-y-2 text-[11px] font-mono">
+                  {diagnoseSteps.map((step, uIdx) => (
+                    <div key={uIdx} className="flex items-center justify-between bg-black/35 px-3 py-1.5 border border-slate-800 rounded-lg">
+                      <span className="text-slate-300">{step.name}</span>
+                      <span className={`text-[9px] px-2 py-0.5 rounded font-bold uppercase ${
+                        step.status === 'COMPLETED' ? 'bg-emerald-500/10 text-emerald-400' :
+                        step.status === 'RUNNING' ? 'bg-blue-500/10 text-blue-450 text-blue-400 animate-pulse' :
+                        step.status === 'FAILED' ? 'bg-rose-500/10 text-rose-400' : 'bg-slate-800 text-slate-400'
+                      }`}>
+                        {step.status === 'COMPLETED' ? 'Sucesso' : step.status === 'RUNNING' ? 'Testando' : step.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {diagnoseLogs.length > 0 && (
+                  <div className="space-y-1.5 font-sans">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Logs de Handshake:</span>
+                    <pre className="p-2.5 bg-black text-[9px] font-mono text-slate-350 rounded-lg max-h-36 overflow-auto leading-relaxed border border-slate-800 w-full max-w-full whitespace-pre-wrap break-all">
+                      {diagnoseLogs.map((lgMsg, lgIdx) => {
+                        let classMap = "text-slate-350";
+                        if (lgMsg.toLowerCase().includes('[erro]') || lgMsg.toLowerCase().includes('fail')) classMap = "text-rose-400";
+                        if (lgMsg.toLowerCase().includes('ok') || lgMsg.toLowerCase().includes('sucesso')) classMap = "text-emerald-400";
+                        return <div key={lgIdx} className={classMap}>{lgMsg}</div>;
+                      })}
+                    </pre>
+                  </div>
+                )}
+
                 <button
                   type="button"
-                  onClick={loadPluggyItems}
-                  disabled={isLoadingItems || localItemIds.length === 0}
-                  className="text-xs font-bold text-emerald-600 hover:text-emerald-700 disabled:opacity-40 flex items-center gap-1 cursor-pointer py-1.5 px-2.5 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg transition-colors"
-                  aria-label="Sincronizar conexões da Pluggy"
+                  onClick={() => copyToClipboard(diagnoseLogs.join('\n'), 'diagnoselogs')}
+                  className="w-full text-center py-2 bg-slate-800 hover:bg-slate-850 rounded-lg text-slate-300 hover:text-white font-semibold text-[10px] uppercase tracking-wider cursor-pointer"
                 >
-                  {isLoadingItems ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                  <span>Atualizar status</span>
+                  {copiedStates['diagnoselogs'] ? "Copiado!" : "Copiar todos os registros"}
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleTestPluggyKeys}
+                disabled={isTestingPluggy || !hasPluggyKeys}
+                className="w-full h-11 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40"
+              >
+                {isTestingPluggy ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                <span>Rodar testes de diagnóstico</span>
+              </button>
+            )}
+          </div>
+        </AdvancedAccordion>
+
+        {/* Accordion 3 - Webhooks e eventos */}
+        <AdvancedAccordion
+          title="Webhooks e eventos"
+          icon={<Radio className="w-4.5 h-4.5" />}
+          isOpen={isWebhooksOpen}
+          onToggle={() => setIsWebhooksOpen(!isWebhooksOpen)}
+        >
+          <div className="space-y-4">
+            <div className="bg-indigo-50/50 dark:bg-indigo-950/20 p-4 rounded-xl border border-indigo-100 dark:border-indigo-900/30">
+              <p className="text-xs text-slate-650 dark:text-slate-300 leading-relaxed">
+                <strong>Atualizações Assíncronas:</strong> Ao configurar um webhook, as atualizações de contas bancárias e novas transações se integram silenciosamente sempre que os conectores realizarem cargas.
+              </p>
+            </div>
+
+            <form onSubmit={handleRegisterWebhook} className="space-y-2">
+              <div className="space-y-1">
+                <label htmlFor="webhook_input" className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">URL do Listener de Entrada</label>
+                <input
+                  id="webhook_input"
+                  type="url"
+                  value={webhookUrl}
+                  onChange={(e) => setWebhookUrl(e.target.value)}
+                  className="w-full h-10 bg-slate-50 dark:bg-black text-slate-850 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-indigo-505 focus:ring-emerald-500"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={isRegisteringWebhook}
+                className="w-full h-10 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                {isRegisteringWebhook ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link className="w-3.5 h-3.5 text-emerald-450 text-emerald-400" />}
+                <span>Registrar Webhook operacional</span>
+              </button>
+            </form>
+
+            {/* List Webhooks */}
+            <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-450 text-slate-400 uppercase tracking-wider block">Listeners Ativos no Gateway</span>
+                <button
+                  type="button"
+                  onClick={loadPluggyWebhooks}
+                  disabled={isLoadingWebhooks}
+                  className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md cursor-pointer transition-colors"
+                  aria-label="Atualizar webhooks"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
                 </button>
               </div>
 
-              {isLoadingItems && localItemIds.length > 0 && pluggyItems.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-10 text-slate-400 gap-2">
-                  <Loader2 className="w-6 h-6 animate-spin text-emerald-500" />
-                  <span className="text-xs">Requisitando conexões cadastradas no servidor...</span>
+              {isLoadingWebhooks ? (
+                <div className="flex justify-center items-center py-4">
+                  <Loader2 className="w-4 h-4 animate-spin text-slate-500" />
                 </div>
-              ) : localItemIds.length === 0 ? (
-                <div className="py-10 text-center bg-slate-50/50 dark:bg-slate-950/25 border border-dashed border-slate-200 dark:border-slate-850 rounded-2xl space-y-2">
-                  <p className="font-bold text-xs text-slate-700 dark:text-slate-300">Nenhuma conta conectada encontrada</p>
-                  <p className="text-[11px] text-slate-400 max-w-sm mx-auto leading-relaxed">
-                    Sua integração bancária está ativa. Conecte sua primeira conta de banco clicando no botão acima ou informe um Item ID existente para começar o rastreio!
-                  </p>
+              ) : pluggyWebhooks.length === 0 ? (
+                <div className="p-3 text-center border border-dashed border-slate-250 dark:border-slate-800 text-[11px] text-slate-400 italic rounded-xl bg-slate-50/50">
+                  Nenhum webhook ativo cadastrado na conta do Pluggy.
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {unifiedConnections.map((conn) => {
-                    const isErrState = ["OUTDATED", "LOGIN_ERROR", "NEEDS_RECONNECT"].includes(conn.status);
-                    
-                    const statusColors: any = {
-                      UPDATED: 'bg-emerald-50 text-emerald-705 border-emerald-100 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-900/40',
-                      UPDATING: 'bg-blue-50 text-blue-705 border-blue-100 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-900/40',
-                      OUTDATED: 'bg-amber-50 text-amber-705 border-amber-100 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-900/40',
-                      LOGIN_ERROR: 'bg-rose-50 text-rose-705 border-rose-150 dark:bg-rose-950/30 dark:text-rose-400 dark:border-rose-900/40',
-                      PENDING_REGISTRATION: 'bg-slate-50 text-slate-500 border-slate-200 dark:bg-slate-800/40 dark:text-slate-400 dark:border-slate-700/50',
-                    };
-                    
-                    const statusLabels: any = {
-                      UPDATED: 'Sincronizado',
-                      UPDATING: 'Buscando...',
-                      OUTDATED: 'Precisa Reconectar',
-                      LOGIN_ERROR: 'Erro de Senha',
-                      PENDING_REGISTRATION: 'ID Gravado (Aguardando carga)',
-                    };
-
-                    return (
-                      <div 
-                        key={conn.id} 
-                        className="p-4 bg-slate-50/50 dark:bg-slate-950 border border-slate-150 dark:border-slate-800 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs font-sans transition-all"
+                <div className="space-y-1.5">
+                  {pluggyWebhooks.map((wh) => (
+                    <div key={wh.id} className="p-3 bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-slate-800 rounded-xl flex items-center justify-between gap-3 font-mono text-[10px] text-slate-700 dark:text-slate-355 text-slate-300">
+                      <div className="min-w-0 pr-1 space-y-1">
+                        <span className="bg-indigo-55 bg-indigo-50/80 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-400 text-[8px] px-1.5 py-0.5 rounded font-bold uppercase">{wh.event}</span>
+                        <p className="truncate text-slate-400 mt-1 leading-none text-[9px]">{wh.url}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteWebhook(wh.id)}
+                        className="p-1 hover:bg-rose-50 dark:hover:bg-rose-950/15 text-rose-500 rounded transition-colors shrink-0 cursor-pointer"
+                        title="Deletar Webhook"
                       >
-                        <div className="flex items-center gap-3 min-w-0">
-                          {conn.imageUrl ? (
-                            <img 
-                              src={conn.imageUrl} 
-                              alt={conn.name} 
-                              className="w-10 h-10 object-contain rounded-xl bg-white dark:bg-slate-800 p-1 border border-slate-200 dark:border-slate-700 shrink-0" 
-                              referrerPolicy="no-referrer" 
-                            />
-                          ) : (
-                            <div className="w-10 h-10 bg-slate-200 dark:bg-slate-800 rounded-xl flex items-center justify-center font-bold text-slate-500 dark:text-slate-400 text-xs shrink-0 uppercase">
-                              {conn.name?.[0] || 'B'}
-                            </div>
-                          )}
-                          <div className="min-w-0 space-y-0.5">
-                            <h4 className="font-bold text-xs text-slate-800 dark:text-slate-200 truncate pr-2">
-                              {conn.name}
-                            </h4>
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-slate-400 font-mono" title={conn.id}>
-                                ID: {conn.id.substring(0, 8)}...{conn.id.substring(conn.id.length - 8)}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => copyToClipboard(conn.id, `item-id-${conn.id}`)}
-                                className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 rounded transition-colors shrink-0 cursor-pointer"
-                                aria-label={`Copiar Item ID ${conn.id}`}
-                              >
-                                {copiedStates[`item-id-${conn.id}`] ? (
-                                  <Check className="w-3.5 h-3.5 text-emerald-500" />
-                                ) : (
-                                  <Copy className="w-3.5 h-3.5" />
-                                )}
-                              </button>
-                            </div>
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Audit Logs Webhooks */}
+            <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block font-sans">Logs de Auditoria</span>
+                <button
+                  type="button"
+                  onClick={loadCapturedEvents}
+                  disabled={isLoadingEvents}
+                  className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded"
+                  aria-label="Atualizar logs de auditoria"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                </button>
+              </div>
+
+              {isLoadingEvents ? (
+                <div className="flex justify-center items-center py-4">
+                  <Loader2 className="w-4 h-4 animate-spin text-slate-500" />
+                </div>
+              ) : capturedEvents.length === 0 ? (
+                <div className="p-3 text-center border border-dashed border-slate-200 dark:border-slate-800 text-[11px] text-slate-404 text-slate-450 text-slate-400 italic rounded-xl bg-slate-50/50 leading-relaxed">
+                  Aguardando recepção das primeiras transmissões da Pluggy...
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-56 overflow-y-auto pr-0.5 font-mono text-[9px]">
+                  {capturedEvents.map((evt) => {
+                    const dateObj = new Date(evt.receivedAt);
+                    const formattedDate = dateObj.toLocaleDateString('pt-BR') + ' ' + dateObj.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+                    return (
+                      <div key={evt.id} className="p-3 bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-slate-805 rounded-xl space-y-1.5">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="font-bold text-slate-800 dark:text-slate-100">{evt.event}</span>
+                          <span className="text-slate-450 text-slate-400">{formattedDate}</span>
+                        </div>
+                        <div className="space-y-0.5 text-slate-500 leading-tight">
+                          <div>ID: {evt.itemId}</div>
+                          <div className="flex items-center justify-between">
+                            <span>Status:</span>
+                            <span className="text-emerald-500 font-bold uppercase">{evt.status}</span>
                           </div>
                         </div>
-
-                        <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 border-t border-slate-100 dark:border-slate-850 pt-2 sm:pt-0 sm:border-0">
-                          <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold border shrink-0 ${statusColors[conn.status] || 'bg-slate-100 text-slate-605 border-slate-200 dark:bg-slate-800/50'}`}>
-                            {statusLabels[conn.status] || conn.status}
-                          </span>
-
-                          <div className="flex gap-1.5 items-center">
-                            {isErrState && (
-                              <button
-                                type="button"
-                                onClick={() => handleOpenPluggyConnect(conn.id)}
-                                className="px-2.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-[10px] rounded-lg transition-all shadow-xs shrink-0 cursor-pointer"
-                                aria-label="Reconectar conta erro"
-                              >
-                                Reconectar
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveManualItemId(conn.id)}
-                              className="p-2 text-rose-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-xl transition-colors cursor-pointer shrink-0"
-                              aria-label={`Desvincular conector ${conn.name}`}
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
+                        <details className="outline-none">
+                          <summary className="cursor-pointer text-slate-400 hover:text-slate-600 outline-none select-none text-[8px] uppercase tracking-wider font-bold">Ver Payload JSON</summary>
+                          <pre className="bg-black text-slate-300 p-2 rounded-lg mt-1 max-h-24 overflow-auto font-mono text-[8px] leading-relaxed border border-slate-800 w-full max-w-full whitespace-pre-wrap break-all">
+                            {JSON.stringify(evt.rawBody, null, 2)}
+                          </pre>
+                        </details>
                       </div>
                     );
                   })}
                 </div>
               )}
             </div>
-          )}
-
-          {/* SEC_4: PREMIUM UNIFIED CLEAR SYNC TRANSACTIONS BLOCK */}
-          {hasPluggyKeys && (
-            <div id="sync-transactions-card" className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
-              <div className="flex gap-4">
-                <div className="bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 p-3 rounded-xl shrink-0 h-fit">
-                  <RefreshCw className="w-5 h-5 animate-spin-slow" />
-                </div>
-                <div className="space-y-1">
-                  <h3 className="font-bold text-sm text-slate-805 dark:text-slate-200">Sincronizar lançamentos recentes</h3>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                    Sincroniza transações dos últimos 30 dias de extrato das contas válidas vinculadas. Nossa engine limpa as descrições e categoriza automaticamente usando o <strong>Gemini AI</strong>.
-                  </p>
-                </div>
-              </div>
-
-              {/* DETAILS ROW WITH NUMERIC OVERVIEWS */}
-              <div className="grid grid-cols-3 gap-2 bg-slate-50/50 dark:bg-slate-950 border border-slate-150 p-3.5 rounded-xl text-center text-xs font-mono">
-                <div>
-                  <span className="text-slate-450 block text-[9px] uppercase font-bold tracking-wider">Conexões</span>
-                  <span className="text-slate-800 dark:text-slate-100 font-bold text-sm mt-0.5 block">{localItemIds.length}</span>
-                </div>
-                <div>
-                  <span className="text-slate-450 block text-[9px] uppercase font-bold tracking-wider">Atenções</span>
-                  <span className={`font-bold text-sm mt-0.5 block ${hasOutdatedItems ? 'text-rose-500' : 'text-emerald-500'}`}>
-                    {hasOutdatedItems ? 'Sim' : 'Não'}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-slate-450 block text-[9px] uppercase font-bold tracking-wider">Janela</span>
-                  <span className="text-slate-800 dark:text-slate-100 font-bold text-sm mt-0.5 block">30 dias</span>
-                </div>
-              </div>
-
-              {/* LOGICAL CURRENT SYNCD STEP */}
-              {pluggySyncStep && (
-                <div 
-                  className="bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-slate-850 p-3 rounded-xl text-xs font-mono text-emerald-600 dark:text-emerald-400 flex items-center leading-relaxed"
-                  aria-live="polite"
-                >
-                  {isSyncingPluggy && <Loader2 className="w-4 h-4 mr-2.5 animate-spin text-emerald-500 shrink-0" />}
-                  <span>{pluggySyncStep}</span>
-                </div>
-              )}
-
-              <div>
-                <button
-                  type="button"
-                  onClick={handleSyncPluggyTransactions}
-                  disabled={isSyncingPluggy || localItemIds.length === 0}
-                  className="w-full h-11 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:pointer-events-none text-white font-bold text-xs rounded-xl shadow-xs cursor-pointer transition-all flex items-center justify-center gap-2 active:scale-[0.98]"
-                >
-                  {isSyncingPluggy ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Processando transações...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-3.5 h-3.5 fill-current text-emerald-200" />
-                      <span>Sincronizar transações agora</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-          )}
-
-        </div>
-
-        {/* RIGHT COLUMN: TECHNICAL PANEL & METADATA DETAILS */}
-        <div className="space-y-6">
-          
-          {/* CREDENTIALS METADATA STATUS */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-850 rounded-2xl p-5 shadow-sm space-y-4">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="w-4.5 h-4.5 text-emerald-500 shrink-0" />
-              <h3 className="font-bold text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Status no Servidor</h3>
-            </div>
-
-            <div className="space-y-2 font-mono text-[11px] leading-relaxed">
-              <div className="flex items-center justify-between py-1.5 border-b border-slate-105 dark:border-slate-805">
-                <span className="text-slate-450">Chaves Servidor:</span>
-                <span className={`font-bold ${isPluggyConfiguredOnServer ? 'text-emerald-650' : 'text-slate-450'}`}>
-                  {isPluggyConfiguredOnServer ? 'Configuradas (Env)' : 'Ausente'}
-                </span>
-              </div>
-              <div className="flex items-center justify-between py-1.5 border-b border-slate-105 dark:border-slate-805">
-                <span className="text-slate-450">Chaves Custom:</span>
-                <span className={`font-bold ${checkHasPluggyKeys() ? 'text-emerald-650' : 'text-amber-600'}`}>
-                  {checkHasPluggyKeys() ? 'Ativas (Perfil)' : 'Não configuradas'}
-                </span>
-              </div>
-              <div className="flex items-center justify-between py-1.5">
-                <span className="text-slate-450">API Base:</span>
-                <span className="text-[10px] bg-slate-100 dark:bg-slate-850 px-1.5 py-0.5 rounded font-bold text-slate-650 dark:text-slate-300">Pluggy V2</span>
-              </div>
-            </div>
-
-            <div className="space-y-2 pt-1">
-              <button
-                type="button"
-                onClick={handleTestPluggyKeys}
-                disabled={isTestingPluggy || !hasPluggyKeys}
-                className="w-full h-10 px-4 bg-slate-900 hover:bg-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
-              >
-                {isTestingPluggy ? (
-                  <Loader2 className="w-4 h-4 animate-spin text-white" />
-                ) : (
-                  <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />
-                )}
-                <span>Testar Comunicação</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setIsCredentialsFormOpen(!isCredentialsFormOpen)}
-                className="w-full h-10 px-4 bg-white hover:bg-slate-50 dark:bg-slate-900 dark:hover:bg-slate-850 text-slate-700 dark:text-slate-350 border border-slate-205 dark:border-slate-800 font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <Settings2 className="w-3.5 h-3.5 text-slate-400" />
-                <span>Configurar Chaves API</span>
-                <ChevronDown className={`w-3.5 h-3.5 ml-auto text-slate-400 transition-transform ${isCredentialsFormOpen ? 'rotate-180' : ''}`} />
-              </button>
-            </div>
-
-            {/* EXPANDABLE SENSITIVE FORM */}
-            <AnimatePresence>
-              {isCredentialsFormOpen && (
-                <motion.form 
-                  onSubmit={handleSaveCustomKeys}
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  className="space-y-3 pt-3 border-t border-slate-100 dark:border-slate-800 overflow-hidden"
-                >
-                  <p className="text-[11px] text-slate-450 leading-relaxed">
-                    Você pode obter chaves de desenvolvimento gratuitas no console da Pluggy (<strong>developer.pluggy.ai</strong>).
-                  </p>
-                  
-                  <div className="space-y-1">
-                    <label htmlFor="pluggy_client_id_right_input" className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block">Client ID</label>
-                    <input
-                      id="pluggy_client_id_right_input"
-                      type="text"
-                      value={pluggyClientId}
-                      onChange={(e) => setPluggyClientId(e.target.value)}
-                      placeholder="Identificador exclusivo"
-                      className="w-full bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-2 text-xs font-mono focus:ring-1 focus:ring-emerald-500 focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label htmlFor="pluggy_client_secret_right_input" className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block">Client Secret</label>
-                    <div className="relative">
-                      <input
-                        id="pluggy_client_secret_right_input"
-                        type={showClientSecret ? 'text' : 'password'}
-                        value={pluggyClientSecret}
-                        onChange={(e) => setPluggyClientSecret(e.target.value)}
-                        placeholder="Chave secreta"
-                        className="w-full bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-lg pl-3 pr-10 py-2 text-xs font-mono focus:ring-1 focus:ring-emerald-500 focus:outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowClientSecret(!showClientSecret)}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                        aria-label={showClientSecret ? "Ocultar Client Secret" : "Revelar Client Secret"}
-                      >
-                        {showClientSecret ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-50/50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-1 tracking-wide">
-                    <span className="text-[9px] font-bold text-slate-400 uppercase block tracking-wider">Persistência da credencial</span>
-                    <div className="flex flex-col gap-1.5">
-                      <label className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="storageMethodRight"
-                          checked={storageMethod === 'cloud'}
-                          onChange={() => setStorageMethod('cloud')}
-                          className="text-emerald-605 focus:ring-emerald-500 shrink-0"
-                        />
-                        <span>Nuvem (Seguro no Firestore)</span>
-                      </label>
-                      <label className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="storageMethodRight"
-                          checked={storageMethod === 'local'}
-                          onChange={() => setStorageMethod('local')}
-                          className="text-emerald-610 focus:ring-emerald-500 shrink-0"
-                        />
-                        <span>Apenas Local (Navegador)</span>
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col gap-1.5 pt-1">
-                    <button
-                      type="submit"
-                      disabled={isSavingCustomKeys}
-                      className="w-full text-center py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-colors"
-                    >
-                      {isSavingCustomKeys ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                      <span>Salvar Credenciais</span>
-                    </button>
-
-                    {(profile.pluggyClientId || localStorage.getItem('PREF_PLUGGY_CLIENT_ID')) && (
-                      <button
-                        type="button"
-                        onClick={handleRemoveCustomKeys}
-                        disabled={isSavingCustomKeys}
-                        className="w-full py-2 hover:bg-rose-50 dark:hover:bg-rose-950/20 text-rose-600 font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        <span>Apagar Chaves salvas</span>
-                      </button>
-                    )}
-                  </div>
-                </motion.form>
-              )}
-            </AnimatePresence>
           </div>
-
-          {/* DIAGNOSTICS LOGS COLLAPSIBLE (AVANÇADO) */}
-          {hasPluggyKeys && (
-            <div id="diagnostics-drawer" className="bg-white dark:bg-slate-900 border border-slate-201 dark:border-slate-850 rounded-2xl overflow-hidden shadow-xs">
-              <button
-                type="button"
-                className="w-full px-5 py-4 flex items-center justify-between text-left focus:outline-none cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors"
-                onClick={() => setIsDiagnosticsOpen(!isDiagnosticsOpen)}
-              >
-                <div className="flex items-center gap-2">
-                  <Sliders className="w-4.5 h-4.5 text-slate-500 dark:text-slate-400 shrink-0" />
-                  <span className="font-bold text-xs text-slate-700 dark:text-slate-350">Informações de Diagnóstico</span>
-                </div>
-                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${isDiagnosticsOpen ? 'rotate-180' : ''}`} />
-              </button>
-
-              <AnimatePresence>
-                {isDiagnosticsOpen && (
-                  <motion.div
-                    initial={{ height: 0 }}
-                    animate={{ height: 'auto' }}
-                    exit={{ height: 0 }}
-                    className="overflow-hidden border-t border-slate-100 dark:border-slate-800"
-                  >
-                    <div className="p-5 space-y-4">
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed font-sans">
-                        Verifique dados das requisições brutas de handshake trocadas entre o servidor local e a API.
-                      </p>
-
-                      {diagnoseSteps && (
-                        <div className="space-y-3.5 bg-slate-900 text-slate-100 p-4 rounded-xl border border-slate-800">
-                          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                            <span className="text-[10px] font-bold uppercase text-slate-400">Verificação de barramento</span>
-                            <button
-                              type="button"
-                              onClick={() => { setDiagnoseSteps(null); setDiagnoseLogs([]); }}
-                              className="text-[9px] text-slate-400 hover:text-white underline"
-                              aria-label="Limpar informações"
-                            >
-                              Limpar
-                            </button>
-                          </div>
-
-                          <div className="space-y-2 text-[11px] font-mono">
-                            {diagnoseSteps.map((step, idx) => (
-                              <div key={idx} className="flex items-center justify-between bg-black/30 px-2.5 py-1.5 border border-slate-800 rounded-lg">
-                                <span className="text-slate-300">{step.name}</span>
-                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
-                                  step.status === 'COMPLETED' ? 'bg-emerald-500/10 text-emerald-400' :
-                                  step.status === 'RUNNING' ? 'bg-blue-500/10 text-blue-400 animate-pulse' :
-                                  step.status === 'FAILED' ? 'bg-rose-500/10 text-rose-400' : 'bg-slate-800 text-slate-400'
-                                }`}>
-                                  {step.status === 'COMPLETED' ? 'Sucesso' : step.status === 'RUNNING' ? 'Executando' : step.status}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-
-                          {diagnoseLogs.length > 0 && (
-                            <div className="space-y-1 pt-1.5 font-sans">
-                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Registros do terminal:</span>
-                              <pre className="p-2.5 bg-black text-[9px] font-mono text-slate-300 rounded-lg max-h-32 overflow-y-auto leading-relaxed border border-slate-800">
-                                {diagnoseLogs.map((log, idx) => {
-                                  let colorClass = "text-slate-350";
-                                  if (log.toLowerCase().includes('[erro]') || log.toLowerCase().includes('fail')) colorClass = "text-rose-450";
-                                  if (log.toLowerCase().includes('ok') || log.toLowerCase().includes('sucesso')) colorClass = "text-emerald-400";
-                                  return <div key={idx} className={colorClass}>{log}</div>;
-                                })}
-                              </pre>
-                            </div>
-                          )}
-
-                          <button
-                            type="button"
-                            onClick={() => copyToClipboard(diagnoseLogs.join('\n'), 'diagnose-logs')}
-                            className="w-full text-center py-2 bg-slate-800 hover:bg-slate-850 rounded-lg text-slate-300 hover:text-white font-medium text-[10px] uppercase tracking-wider"
-                          >
-                            Copiar Log Completo
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          )}
-
-          {/* WEBHOOKS ADVANCED ACCORDION (CARREGA APENAS SOB DEMANDA DE EXPANSÃO) */}
-          {hasPluggyKeys && (
-            <div id="webhooks-drawer" className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-850 rounded-2xl overflow-hidden shadow-xs">
-              <button
-                type="button"
-                className="w-full px-5 py-4 flex items-center justify-between text-left focus:outline-none cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors"
-                onClick={() => setIsWebhooksOpen(!isWebhooksOpen)}
-              >
-                <div className="flex items-center gap-2">
-                  <Radio className="w-4.5 h-4.5 text-slate-500 dark:text-slate-400 shrink-0" />
-                  <span className="font-bold text-xs text-slate-700 dark:text-slate-350">Webhooks & Eventos</span>
-                </div>
-                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${isWebhooksOpen ? 'rotate-180' : ''}`} />
-              </button>
-
-              <AnimatePresence>
-                {isWebhooksOpen && (
-                  <motion.div
-                    initial={{ height: 0 }}
-                    animate={{ height: 'auto' }}
-                    exit={{ height: 0 }}
-                    className="overflow-hidden border-t border-slate-100 dark:border-slate-800"
-                  >
-                    <div className="p-5 space-y-4">
-                      
-                      <div className="bg-indigo-50/50 dark:bg-indigo-950/20 p-3.5 rounded-xl border border-indigo-100 dark:border-indigo-900/30">
-                        <p className="text-[11px] text-slate-650 dark:text-indigo-305 leading-relaxed">
-                          <strong>Tempo Real:</strong> Permite que a Pluggy notifique nosso servidor imediatamente quando houver novos lançamentos.
-                        </p>
-                      </div>
-
-                      {/* WEBHOOK REGISTER COMPENDIUM */}
-                      <form onSubmit={handleRegisterWebhook} className="space-y-2 pt-1">
-                        <div className="space-y-1">
-                          <label htmlFor="webhookUrlInput" className="text-[10px] font-bold text-slate-500 font-sans block uppercase tracking-wider">URL do Listener</label>
-                          <input
-                            id="webhookUrlInput"
-                            type="url"
-                            value={webhookUrl}
-                            onChange={(e) => setWebhookUrl(e.target.value)}
-                            className="w-full bg-slate-50 dark:bg-slate-950 text-slate-805 dark:text-slate-100 border border-slate-205 dark:border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-indigo-505"
-                          />
-                        </div>
-
-                        <button
-                          type="submit"
-                          disabled={isRegisteringWebhook}
-                          className="w-full h-9 bg-indigo-605 hover:bg-indigo-700 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1.5"
-                        >
-                          {isRegisteringWebhook ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link className="w-3.5 h-3.5 text-emerald-400" />}
-                          <span>Ativar Webhook no Pluggy</span>
-                        </button>
-                      </form>
-
-                      {/* LIST DE WEBHOOKS ATIVOS */}
-                      <div className="space-y-2 pt-3 border-t border-slate-100 dark:border-slate-800">
-                        <div className="flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-slate-405 uppercase tracking-wider block">Registros no Gateway</span>
-                          <button
-                            type="button"
-                            onClick={loadPluggyWebhooks}
-                            disabled={isLoadingWebhooks}
-                            className="p-1 hover:bg-slate-50 dark:hover:bg-slate-800 rounded"
-                            aria-label="Atualizar webhooks"
-                          >
-                            <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
-                          </button>
-                        </div>
-
-                        {isLoadingWebhooks ? (
-                          <div className="flex justify-center items-center py-4">
-                            <Loader2 className="w-4 h-4 animate-spin text-slate-400" />
-                          </div>
-                        ) : pluggyWebhooks.length === 0 ? (
-                          <div className="p-3 text-center border border-dashed border-slate-200 dark:border-slate-800 text-[11px] text-slate-400 italic rounded-xl bg-slate-50/50">
-                            Nenhum webhook registrado na Pluggy.
-                          </div>
-                        ) : (
-                          <div className="space-y-1.5">
-                            {pluggyWebhooks.map((wh) => (
-                              <div key={wh.id} className="p-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl flex items-center justify-between gap-2.5 font-mono text-[10px] text-slate-700 dark:text-slate-300">
-                                <div className="min-w-0 pr-1 space-y-1">
-                                  <span className="bg-indigo-50 text-indigo-750 dark:bg-indigo-950/40 dark:text-indigo-400 text-[8px] px-1.5 py-0.5 rounded font-bold uppercase">{wh.event}</span>
-                                  <p className="truncate text-slate-400 mt-1 leading-none">{wh.url}</p>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteWebhook(wh.id)}
-                                  className="p-1 hover:bg-rose-50 dark:hover:bg-rose-950/25 text-rose-500 rounded transition-colors shrink-0 cursor-pointer"
-                                  aria-label="Deletar Webhook"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* WEBHOOK NOTIFICATION LOGS LIST */}
-                      <div className="space-y-2 pt-3 border-t border-slate-100 dark:border-slate-800">
-                        <div className="flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block font-sans">Logs de Auditoria</span>
-                          <button
-                            type="button"
-                            onClick={loadCapturedEvents}
-                            disabled={isLoadingEvents}
-                            className="p-1 hover:bg-slate-50 dark:hover:bg-slate-800 rounded"
-                            aria-label="Atualizar logs de auditoria"
-                          >
-                            <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
-                          </button>
-                        </div>
-
-                        {isLoadingEvents ? (
-                          <div className="flex justify-center items-center py-4">
-                            <Loader2 className="w-4 h-4 animate-spin text-slate-400" />
-                          </div>
-                        ) : capturedEvents.length === 0 ? (
-                          <div className="p-3 text-center border border-dashed border-slate-200 dark:border-slate-800 text-[11px] text-slate-400 italic rounded-xl bg-slate-50/50 leading-relaxed">
-                            Aguardando primeiras chamadas de webhook do Pluggy... Descrições e cargas recebidas aparecerão aqui.
-                          </div>
-                        ) : (
-                          <div className="space-y-2 max-h-52 overflow-y-auto pr-0.5 font-mono text-[9px]">
-                            {capturedEvents.map((evt) => {
-                              const dateObj = new Date(evt.receivedAt);
-                              const formattedDate = dateObj.toLocaleDateString('pt-BR') + ' ' + dateObj.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-                              return (
-                                <div key={evt.id} className="p-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-805 rounded-xl space-y-1.5">
-                                  <div className="flex items-center justify-between text-[10px]">
-                                    <span className="font-bold text-slate-850 dark:text-slate-100">{evt.event}</span>
-                                    <span className="text-slate-400">{formattedDate}</span>
-                                  </div>
-                                  <div className="space-y-0.5 text-slate-500 leading-tight">
-                                    <div>ID: {evt.itemId}</div>
-                                    <div className="flex items-center justify-between">
-                                      <span>Status:</span>
-                                      <span className="text-emerald-500 font-bold uppercase">{evt.status}</span>
-                                    </div>
-                                  </div>
-                                  <details>
-                                    <summary className="cursor-pointer text-slate-450 hover:text-slate-650 outline-none">Payload</summary>
-                                    <pre className="bg-black text-slate-350 p-2 rounded-lg mt-1 max-h-24 overflow-auto font-mono text-[8px] leading-relaxed">
-                                      {JSON.stringify(evt.rawBody, null, 2)}
-                                    </pre>
-                                  </details>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          )}
-
-        </div>
-
+        </AdvancedAccordion>
       </div>
 
-      {/* GLOBAL CONFIRMATION MODAL OVERLAY (Saves us from iframe window.confirm blocking) */}
+      {/* GLOBAL CONFIRMATION MODAL OVERLAY (Pure React custom confirm panel - never blocks container frame) */}
       <AnimatePresence>
         {confirmModal?.isOpen && (
           <motion.div 
@@ -1514,12 +1692,12 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
               className="bg-white dark:bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-200 dark:border-slate-800 space-y-4 text-left"
             >
               <div className="flex gap-3.5 items-start">
-                <div className={`p-2.5 rounded-xl ${confirmModal.actionType === 'danger' ? 'bg-rose-50 text-rose-500 dark:bg-rose-950/30' : 'bg-emerald-50 text-emerald-500 dark:bg-emerald-950/30'} shrink-0`}>
+                <div className={`p-2.5 rounded-xl ${confirmModal.actionType === 'danger' ? 'bg-rose-50 text-rose-500 dark:bg-rose-950/20' : 'bg-emerald-50 text-emerald-500 dark:bg-emerald-950/20'} shrink-0`}>
                   <AlertTriangle className="w-5 h-5" />
                 </div>
                 <div className="space-y-1">
-                  <h3 className="font-bold text-sm text-slate-850 dark:text-slate-100">{confirmModal.title}</h3>
-                  <p className="text-xs text-slate-500 dark:text-slate-404 leading-relaxed font-sans">{confirmModal.description}</p>
+                  <h3 className="font-bold text-sm text-slate-800 dark:text-slate-200">{confirmModal.title}</h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed font-sans">{confirmModal.description}</p>
                 </div>
               </div>
 
@@ -1527,7 +1705,7 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
                 <button
                   type="button"
                   onClick={() => setConfirmModal(null)}
-                  className="px-4 py-2 bg-slate-105 dark:bg-slate-850 text-slate-650 dark:text-slate-300 font-bold text-xs rounded-xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                  className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold text-xs rounded-xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
                 >
                   Cancelar
                 </button>
