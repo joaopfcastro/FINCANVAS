@@ -134,6 +134,17 @@ export class PluggyService {
   }
 
   /**
+   * Retrieves a single connection item by ID
+   */
+  public static async getItem(apiKey: string, itemId: string): Promise<PluggyItem> {
+    console.log(`[PluggyService] Recuperando detalhes do item ${itemId}...`);
+    const cleanId = this.sanitize(itemId);
+    return this.request(`/items/${cleanId}`, {
+      headers: this.getHeaders(apiKey, ""),
+    });
+  }
+
+  /**
    * Disconnects and deletes an item consent from Pluggy
    */
   public static async deleteItem(apiKey: string, itemId: string): Promise<void> {

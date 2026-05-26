@@ -63,6 +63,8 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   // Estados de Integração Pluggy
   const [pluggyClientId, setPluggyClientId] = useState(profile.pluggyClientId || '');
   const [pluggyClientSecret, setPluggyClientSecret] = useState(profile.pluggyClientSecret || '');
+  const [isPluggyConfiguredOnServer, setIsPluggyConfiguredOnServer] = useState(false);
+  const [manualItemIdInput, setManualItemIdInput] = useState('');
   const [isSavingPluggy, setIsSavingPluggy] = useState(false);
   const [isTestingPluggy, setIsTestingPluggy] = useState(false);
   const [isSyncingPluggy, setIsSyncingPluggy] = useState(false);
@@ -245,7 +247,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const handleTestPluggyKeys = async () => {
-    if (!pluggyClientId || !pluggyClientSecret) {
+    if (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer) {
       toast.error('Informe o Client ID e Client Secret antes de realizar o teste.');
       return;
     }
@@ -253,7 +255,8 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
     setDiagnoseSteps([
       { name: "Verificação de Parâmetros", status: "RUNNING", details: "Lendo campos..." },
       { name: "Handshake de Autenticação", status: "PENDING", details: "Aguardando..." },
-      { name: "Mapeamento de Workspace", status: "PENDING", details: "Aguardando..." }
+      { name: "Mapeamento de Workspace", status: "PENDING", details: "Aguardando..." },
+      { name: "Verificação de Itens Relacionados", status: "PENDING", details: "Aguardando..." }
     ]);
     setDiagnoseLogs(["[Preflight] Iniciando checagem detalhada de rotas..."]);
     
@@ -261,7 +264,11 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
       const res = await fetch('/api/pluggy/diagnose', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientId: pluggyClientId, clientSecret: pluggyClientSecret })
+        body: JSON.stringify({
+          clientId: pluggyClientId,
+          clientSecret: pluggyClientSecret,
+          itemIds: profile.pluggyItemIds || []
+        })
       });
       const data = await safeJsonClient(res);
       if (data.steps) {
@@ -287,7 +294,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const handleCreateSandbox = async () => {
-    if (!pluggyClientId || !pluggyClientSecret) {
+    if (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer) {
       toast.error('Por favor, informe e salve as credenciais do Pluggy primeiro.');
       return;
     }
@@ -325,7 +332,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const handleSyncPluggyTransactions = async () => {
-    if (!pluggyClientId || !pluggyClientSecret) {
+    if (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer) {
       toast.error('Chaves do Pluggy não detectadas ou incompletas.');
       return;
     }
@@ -453,13 +460,17 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const loadPluggyItems = async () => {
-    if (!pluggyClientId || !pluggyClientSecret) return;
+    if (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer) return;
     setIsLoadingItems(true);
     try {
       const res = await fetch('/api/pluggy/list_items', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientId: pluggyClientId, clientSecret: pluggyClientSecret })
+        body: JSON.stringify({
+          clientId: pluggyClientId,
+          clientSecret: pluggyClientSecret,
+          itemIds: profile.pluggyItemIds || []
+        })
       });
       const data = await safeJsonClient(res);
       if (res.ok && data.success) {
@@ -509,7 +520,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const loadPluggyWebhooks = async () => {
-    if (!pluggyClientId || !pluggyClientSecret) return;
+    if (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer) return;
     setIsLoadingWebhooks(true);
     try {
       const res = await fetch('/api/pluggy/list_webhooks', {
@@ -532,7 +543,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
 
   const handleRegisterWebhook = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!pluggyClientId || !pluggyClientSecret) {
+    if (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer) {
       toast.error('Grave as chaves Pluggy Client ID e Secret antes de criar webhooks.');
       return;
     }
@@ -609,19 +620,82 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
     }
   };
 
+  const handleSaveManualItemId = async () => {
+    const rawId = manualItemIdInput.trim();
+    if (!rawId) {
+      toast.error('O campo do ID não pode estar vazio.');
+      return;
+    }
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(rawId)) {
+      toast.error('O ID informado é inválido. Certifique-se de que é um UUID padrão do Pluggy conectado.');
+      return;
+    }
+
+    const currentItemIds = profile.pluggyItemIds || [];
+    if (currentItemIds.includes(rawId)) {
+      toast.error('Este Item ID já está cadastrado nesta conta.');
+      return;
+    }
+
+    try {
+      const updatedItemIds = [...currentItemIds, rawId];
+      await updateDoc(doc(db, 'users', user.uid), {
+        pluggyItemIds: updatedItemIds,
+        updatedAt: serverTimestamp()
+      });
+      setManualItemIdInput('');
+      toast.success('ID de Conexão cadastrado com sucesso!');
+      await loadPluggyItems();
+    } catch (err: any) {
+      console.error(err);
+      toast.error('Erro ao salvar o ID no Firestore.');
+    }
+  };
+
+  const handleRemoveManualItemId = async (idPost: string) => {
+    if (!window.confirm(`Deseja desativar e desvincular o Item ID ${idPost}?`)) {
+      return;
+    }
+    try {
+      const updatedItemIds = (profile.pluggyItemIds || []).filter((item: string) => item !== idPost);
+      await updateDoc(doc(db, 'users', user.uid), {
+        pluggyItemIds: updatedItemIds,
+        updatedAt: serverTimestamp()
+      });
+      toast.success('ID de Conexão removido com sucesso!');
+      await loadPluggyItems();
+    } catch (err: any) {
+      console.error(err);
+      toast.error('Erro ao remover o ID do Firestore.');
+    }
+  };
+
   React.useEffect(() => {
     if (typeof window !== 'undefined') {
       setWebhookUrl(window.location.origin + '/api/pluggy/webhook_listener');
     }
+    const checkServerCredentials = async () => {
+      try {
+        const res = await fetch('/api/pluggy/credentials_status');
+        const data = await safeJsonClient(res);
+        if (data.configured) {
+          setIsPluggyConfiguredOnServer(true);
+        }
+      } catch (err) {
+        console.error('Erro ao verificar credenciais do servidor:', err);
+      }
+    };
+    checkServerCredentials();
   }, []);
 
   React.useEffect(() => {
-    if (activePanel === 'pluggy' && pluggyClientId && pluggyClientSecret) {
+    if (activePanel === 'pluggy' && (isPluggyConfiguredOnServer || (pluggyClientId && pluggyClientSecret))) {
       loadPluggyItems();
       loadPluggyWebhooks();
       loadCapturedEvents();
     }
-  }, [activePanel, pluggyClientId, pluggyClientSecret]);
+  }, [activePanel, pluggyClientId, pluggyClientSecret, isPluggyConfiguredOnServer, profile.pluggyItemIds]);
 
   return (
     <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -906,63 +980,146 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                   </div>
                 </div>
 
-                <form onSubmit={handleSavePluggyKeys} className="space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-2 uppercase tracking-wide">Pluggy Client ID</label>
-                      <div className="relative">
-                        <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
-                          <Key className="h-4.5 w-4.5 text-slate-400" />
-                        </div>
-                        <input
-                          type="text"
-                          value={pluggyClientId}
-                          onChange={(e) => setPluggyClientId(e.target.value)}
-                          placeholder="Ex: 5e64ac32-f32a..."
-                          className="w-full bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none transition-all font-mono"
-                        />
-                      </div>
+                {isPluggyConfiguredOnServer ? (
+                  <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 p-5 rounded-2xl space-y-3">
+                    <div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-400">
+                      <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
+                      <span className="font-bold text-[14px]">Credenciais Ativas Seguras no Servidor</span>
                     </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-2 uppercase tracking-wide">Pluggy Client Secret</label>
-                      <div className="relative">
-                        <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
-                          <Key className="h-4.5 w-4.5 text-slate-400" />
-                        </div>
-                        <input
-                          type="password"
-                          value={pluggyClientSecret}
-                          onChange={(e) => setPluggyClientSecret(e.target.value)}
-                          placeholder="••••••••••••••••••••"
-                          className="w-full bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none transition-all font-mono"
-                        />
-                      </div>
+                    <p className="text-xs text-slate-600 dark:text-slate-450 leading-relaxed">
+                      O servidor do FINCANVAS está carregando suas credenciais da API Privada do Pluggy diretamente do arquivo seguro de variáveis de ambiente do ambiente de produção (<code>.env</code>). Não é necessário fornecer credenciais manuais pelo navegador.
+                    </p>
+                    <div className="flex pt-1">
+                      <button
+                        type="button"
+                        onClick={handleTestPluggyKeys}
+                        disabled={isTestingPluggy}
+                        className="px-5 py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-bold hover:bg-slate-50 dark:hover:bg-slate-800 text-xs rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
+                      >
+                        {isTestingPluggy ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          'Testar Conexão do Servidor'
+                        )}
+                      </button>
                     </div>
                   </div>
+                ) : (
+                  <form onSubmit={handleSavePluggyKeys} className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-2 uppercase tracking-wide">Pluggy Client ID</label>
+                        <div className="relative">
+                          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                            <Key className="h-4.5 w-4.5 text-slate-400" />
+                          </div>
+                          <input
+                            type="text"
+                            value={pluggyClientId}
+                            onChange={(e) => setPluggyClientId(e.target.value)}
+                            placeholder="Ex: 5e64ac32-f32a..."
+                            className="w-full bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none transition-all font-mono"
+                          />
+                        </div>
+                      </div>
 
-                  <div className="flex flex-col sm:flex-row gap-2 pt-2">
-                    <button
-                      type="submit"
-                      disabled={isSavingPluggy}
-                      className="flex-1 py-3 bg-slate-800 hover:bg-slate-900 dark:bg-emerald-600 dark:hover:bg-emerald-700 text-white font-bold text-sm rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
-                    >
-                      {isSavingPluggy ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Salvar Chaves'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleTestPluggyKeys}
-                      disabled={isTestingPluggy}
-                      className="px-5 py-3 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold hover:bg-slate-50 dark:hover:bg-slate-800 text-sm rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
-                    >
-                      {isTestingPluggy ? (
-                        <Loader2 className="w-5 h-5 animate-spin" />
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-2 uppercase tracking-wide">Pluggy Client Secret</label>
+                        <div className="relative">
+                          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                            <Key className="h-4.5 w-4.5 text-slate-400" />
+                          </div>
+                          <input
+                            type="password"
+                            value={pluggyClientSecret}
+                            onChange={(e) => setPluggyClientSecret(e.target.value)}
+                            placeholder="••••••••••••••••••••"
+                            className="w-full bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none transition-all font-mono"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                      <button
+                        type="submit"
+                        disabled={isSavingPluggy}
+                        className="flex-1 py-3 bg-slate-800 hover:bg-slate-900 dark:bg-emerald-600 dark:hover:bg-emerald-700 text-white font-bold text-sm rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
+                      >
+                        {isSavingPluggy ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Salvar Chaves'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleTestPluggyKeys}
+                        disabled={isTestingPluggy}
+                        className="px-5 py-3 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold hover:bg-slate-50 dark:hover:bg-slate-800 text-sm rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
+                      >
+                        {isTestingPluggy ? (
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                        ) : (
+                          'Testar Conexão'
+                        )}
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {/* --- CADASTRO MANUAL DE ITEM IDS (Free/Personal/Demo/Meu Pluggy) --- */}
+                <div className="border border-slate-100 dark:border-slate-700/60 my-4"></div>
+
+                <div className="bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800/80 p-5 rounded-2xl space-y-4 shadow-sm">
+                  <h4 className="font-bold text-xs uppercase tracking-wider text-slate-505 dark:text-slate-400 flex items-center gap-1.5">
+                    <Link className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                    Inserir IDs de Conexão Manualmente (Plano Personal/Free)
+                  </h4>
+                  <p className="text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+                    Se você utiliza o plano gratuito do Pluggy ou tem conexões antigas criadas via console "Meu Pluggy", a listagem global automática de itens pode estar bloqueada. Forneça o <strong>Item ID</strong> (formato UUID) abaixo para sincronizar suas transações diretamente.
+                  </p>
+
+                  <div className="space-y-3">
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={manualItemIdInput}
+                        onChange={(e) => setManualItemIdInput(e.target.value)}
+                        placeholder="Ex: 88fa38cc-2a31-4874-bc48-abcde1234567"
+                        className="flex-1 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-850 rounded-xl px-4 py-2.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleSaveManualItemId}
+                        className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-colors shrink-0 active:scale-[0.98]"
+                      >
+                        Vincular ID
+                      </button>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Item ID(s) de Conexão Ativos:</div>
+                      {(!profile.pluggyItemIds || profile.pluggyItemIds.length === 0) ? (
+                        <div className="text-[11px] text-slate-400 italic bg-white dark:bg-slate-950/40 px-3 py-2.5 rounded-xl border border-dashed border-slate-200 dark:border-slate-800 text-center">
+                          Nenhum Item ID vinculado manualmente ou sandbox sincronizado.
+                        </div>
                       ) : (
-                        'Testar Conexão'
+                        <div className="flex flex-wrap gap-2">
+                          {profile.pluggyItemIds.map((id: string) => (
+                              <div key={id} className="flex items-center gap-2 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 py-1.5 pl-3 pr-2 rounded-xl text-xs font-mono text-slate-700 dark:text-slate-300 shadow-sm">
+                                <span className="truncate max-w-[160px] sm:max-w-[280px]">{id}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveManualItemId(id)}
+                                  className="p-1 hover:bg-rose-50 dark:hover:bg-rose-950/20 text-rose-500 rounded-lg transition-colors cursor-pointer"
+                                  title="Remover ID"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                          ))}
+                        </div>
                       )}
-                    </button>
+                    </div>
                   </div>
-                </form>
+                </div>
 
                 {/* Visual live diagnostics checker output */}
                 {diagnoseSteps && (
@@ -1027,11 +1184,11 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <h3 className="font-bold text-[15px] text-slate-800 dark:text-slate-200 flex items-center">
                       <Database className="w-5 h-5 mr-2 text-emerald-600 dark:text-emerald-400" />
                       Conexões de Contas Ativas ({pluggyItems.length})
-                    </h3>
+                     </h3>
                     <button
                       type="button"
                       onClick={loadPluggyItems}
-                      disabled={isLoadingItems || !pluggyClientId || !pluggyClientSecret}
+                      disabled={isLoadingItems || (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer)}
                       className="text-xs font-bold text-emerald-600 hover:text-emerald-700 flex items-center gap-1 disabled:opacity-50"
                       title="Clique para recarregar as contas conectadas do Pluggy"
                     >
@@ -1040,7 +1197,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     </button>
                   </div>
 
-                  {!pluggyClientId || !pluggyClientSecret ? (
+                  {!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer ? (
                     <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-150 dark:border-slate-800 text-center text-xs text-slate-500">
                       Salve suas credenciais (Client ID e Secret) acima para visualizar suas conexões ativas.
                     </div>
@@ -1130,7 +1287,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <button
                       type="button"
                       onClick={handleSyncPluggyTransactions}
-                      disabled={isSyncingPluggy || !pluggyClientId || !pluggyClientSecret}
+                      disabled={isSyncingPluggy || (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer)}
                       className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-2xl shadow-md shadow-emerald-600/10 hover:shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98]"
                     >
                       {isSyncingPluggy ? (
@@ -1208,7 +1365,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
 
                     <button
                       type="submit"
-                      disabled={isRegisteringWebhook || !pluggyClientId || !pluggyClientSecret}
+                      disabled={isRegisteringWebhook || (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer)}
                       className="w-full sm:w-auto px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-45 disabled:cursor-not-allowed active:scale-[0.98]"
                     >
                       {isRegisteringWebhook ? (
@@ -1232,7 +1389,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       <button
                         type="button"
                         onClick={loadPluggyWebhooks}
-                        disabled={isLoadingWebhooks || !pluggyClientId || !pluggyClientSecret}
+                        disabled={isLoadingWebhooks || (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer)}
                         className="text-[11px] font-bold text-indigo-600 hover:indigo-700 flex items-center gap-1 disabled:opacity-50"
                       >
                         {isLoadingWebhooks ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
@@ -1240,7 +1397,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       </button>
                     </div>
 
-                    {!pluggyClientId || !pluggyClientSecret ? (
+                    {!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer ? (
                       <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 text-center text-[11px] text-slate-500">
                         Insira e salve as chaves API acima para obter a relação de canais ativos.
                       </div>

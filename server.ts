@@ -333,10 +333,20 @@ async function startServer() {
   // Parse large payloads (receipt images)
   app.use(express.json({ limit: "50mb" }));
 
+  // 0. Check secure credentials status
+  app.get("/api/pluggy/credentials_status", (req, res) => {
+    const hasEnv = !!(process.env.PLUGGY_CLIENT_ID && process.env.PLUGGY_CLIENT_SECRET);
+    res.json({ configured: hasEnv });
+  });
+
   // 1. Testar Credenciais da API Privada do Pluggy
   app.post("/api/pluggy/test", async (req, res) => {
-    const { clientId, clientSecret } = req.body;
+    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
+    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
     try {
+      if (!clientId || !clientSecret) {
+        throw new Error("Client ID ou Client Secret ausente. Certifique-se de configurar as chaves no servidor (.env) ou digitá-las.");
+      }
       await PluggyService.authenticate(clientId, clientSecret);
       res.json({ success: true, message: "Par de chaves do Pluggy validado com sucesso!" });
     } catch (err: any) {
@@ -347,10 +357,36 @@ async function startServer() {
 
   // 1.1 Listar conexões (items) ativas do Pluggy
   app.post("/api/pluggy/list_items", async (req, res) => {
-    const { clientId, clientSecret } = req.body;
+    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
+    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
+    const { itemIds } = req.body;
     try {
+      if (!clientId || !clientSecret) {
+        return res.status(400).json({ error: "Credenciais de API do Pluggy não fornecidas ou incompletas." });
+      }
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
-      const items = await PluggyService.listItems(apiKey);
+      
+      let items: any[] = [];
+      try {
+        items = await PluggyService.listItems(apiKey);
+      } catch (listErr: any) {
+        console.warn("[Pluggy list_items] Global workspace listing failed or restricted:", listErr.message);
+      }
+
+      // If global workspace list is empty or restricted, but we have specific IDs, fetch individually
+      const listIds: string[] = Array.isArray(itemIds) ? itemIds : [];
+      if (items.length === 0 && listIds.length > 0) {
+        console.log(`[Pluggy list_items] Falling back to fetching ${listIds.length} item(s) individually...`);
+        for (const id of listIds) {
+          try {
+            const item = await PluggyService.getItem(apiKey, id);
+            items.push(item);
+          } catch (itemErr: any) {
+            console.error(`[Pluggy list_items] Failed to get single item ${id}:`, itemErr.message);
+          }
+        }
+      }
+
       res.json({ success: true, items });
     } catch (err: any) {
       console.error("[Pluggy list_items HTTP Router Error]:", err.message);
@@ -360,11 +396,16 @@ async function startServer() {
 
   // 1.2 Deletar uma conexão (item) no Pluggy
   app.post("/api/pluggy/delete_item", async (req, res) => {
-    const { clientId, clientSecret, itemId } = req.body;
+    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
+    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
+    const { itemId } = req.body;
     if (!itemId) {
       return res.status(400).json({ error: "Item ID é um parâmetro obrigatório de exclusão." });
     }
     try {
+      if (!clientId || !clientSecret) {
+        return res.status(400).json({ error: "Credenciais do Pluggy ausentes." });
+      }
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       await PluggyService.deleteItem(apiKey, itemId);
       res.json({ success: true, message: "Conexão deletada com sucesso!" });
@@ -376,12 +417,16 @@ async function startServer() {
 
   // 1.3 Adicionar um canal de diagnóstico ao vivo da Pluggy
   app.post("/api/pluggy/diagnose", async (req, res) => {
-    const { clientId, clientSecret } = req.body;
+    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
+    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
+    const { itemIds } = req.body;
+    
     const logs: string[] = [];
     const steps: { name: string; status: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED"; details: string }[] = [
       { name: "Verificação de Parâmetros", status: "PENDING", details: "Aguardando início..." },
       { name: "Handshake de Autenticação", status: "PENDING", details: "Aguardando início..." },
-      { name: "Mapeamento de Workspace", status: "PENDING", details: "Aguardando início..." }
+      { name: "Mapeamento de Workspace", status: "PENDING", details: "Aguardando início..." },
+      { name: "Verificação de Itens Relacionados", status: "PENDING", details: "Aguardando..." }
     ];
 
     logs.push("[Diagnóstico] Iniciando varredura e testes ao vivo para o Pluggy...");
@@ -395,19 +440,18 @@ async function startServer() {
 
       if (!cleanId || !cleanSecret) {
         steps[0].status = "FAILED";
-        steps[0].details = "Client ID ou Secret em branco ou inválidos no navegador.";
-        throw new Error("Chaves em branco. Por favor digite seu Client ID e Client Secret antes de prosseguir.");
+        steps[0].details = "Client ID ou Secret em branco ou indisponíveis.";
+        throw new Error("Chaves em branco. Por favor forneça seu Client ID e Client Secret antes de prosseguir.");
       }
       
       steps[0].status = "COMPLETED";
-      steps[0].details = "Credenciais bem-formatadas localmente (higienização completa realizada).";
-      logs.push(`[Passo 1] Parâmetros validados com sucesso! Client ID higienizado: "${cleanId.substring(0, 8)}..."`);
+      steps[0].details = "Credenciais localizadas e bem-formatadas.";
+      logs.push(`[Passo 1] Parâmetros validados! Client ID mascarado: "${cleanId.substring(0, 8)}..."`);
 
       // Passo 2: Handshake do Servidor
       steps[1].status = "RUNNING";
       const authUrl = "https://api.pluggy.ai/auth";
       logs.push(`[Passo 2] Disparando handshake seguro (POST /auth) contra: ${authUrl}`);
-      logs.push(`[Passo 2] Payload enviado: {"clientId": "${cleanId.substring(0, 8)}...", "clientSecret": "****"}`);
       
       const authRes = await fetch(authUrl, {
         method: "POST",
@@ -417,7 +461,7 @@ async function startServer() {
 
       logs.push(`[Passo 2] Status de resposta retornado de /auth: ${authRes.status} (${authRes.statusText})`);
       const authData = await authRes.json().catch(() => ({}));
-      logs.push(`[Passo 2] Atributos retornados nas chaves do objeto JSON: [${Object.keys(authData).join(", ")}]`);
+      logs.push(`[Passo 2] Atributos retornados no objeto JSON: [${Object.keys(authData).join(", ")}]`);
 
       let apiKey = authData?.apiKey || authData?.api_key || authData?.token || authData?.accessToken;
       if (apiKey && typeof apiKey === 'string') {
@@ -434,68 +478,77 @@ async function startServer() {
       steps[1].status = "COMPLETED";
       steps[1].details = "Handshake válido! API key liberada.";
       logs.push(`[Passo 2] Autenticação realizada com sucesso!`);
-      logs.push(`[Passo 2] Chave extraída (Mascarada): ${apiKey.substring(0, 6)}...${apiKey.substring(apiKey.length - 6)} (Comprimento total: ${apiKey.length} caracteres)`);
+      logs.push(`[Passo 2] Chave obtida (Mascarada): ${apiKey.substring(0, 6)}...${apiKey.substring(apiKey.length - 6)}`);
 
-      // Passo 3: Varredura de contas com testes de múltiplos formatos de cabeçalhos
+      // Passo 3: Varredura de items global
       steps[2].status = "RUNNING";
-      logs.push("[Passo 3] Testando múltiplos formatos de cabeçalho contra o endpoint /items...");
+      logs.push("[Passo 3] Testando listagem global em /items...");
 
-      const headerOptions = [
-        { name: "x-api-key (Minúscula)", headers: { "x-api-key": apiKey } },
-        { name: "X-API-KEY (Tudo Maiúscula)", headers: { "X-API-KEY": apiKey } },
-        { name: "X-Api-Key (Camel-Case)", headers: { "X-Api-Key": apiKey } },
-        { name: "Authorization: Bearer <token>", headers: { "Authorization": `Bearer ${apiKey}` } },
-        { name: "Authorization: <token>", headers: { "Authorization": apiKey } },
-        { name: "Híbrido (x-api-key + X-API-KEY)", headers: { "x-api-key": apiKey, "X-API-KEY": apiKey } }
-      ];
-
-      let itemsList: any[] = [];
-      let successHeaderOption: any = null;
-
-      for (const option of headerOptions) {
-        logs.push(`[Passo 3] Testando formato: ${option.name}...`);
+      let isGlobalListOk = false;
+      let globalItemsCount = 0;
+      try {
+        const resTest = await fetch("https://api.pluggy.ai/items", {
+          headers: { "X-API-KEY": apiKey }
+        });
         
-        // Detalhar cabeçalho enviado
-        const maskedHeaders: any = {};
-        for (const [k, v] of Object.entries(option.headers)) {
-          const valStr = String(v);
-          maskedHeaders[k] = valStr.length > 12 
-            ? `${valStr.substring(0, 6)}...${valStr.substring(valStr.length - 6)} (Tamanho: ${valStr.length})`
-            : `*** (Tamanho: ${valStr.length})`;
+        if (resTest.ok) {
+          const data = await resTest.json();
+          globalItemsCount = (data.results || []).length;
+          isGlobalListOk = true;
+          steps[2].status = "COMPLETED";
+          steps[2].details = `Workspace global mapeado com sucesso! Encontrados ${globalItemsCount} itens de conexão.`;
+          logs.push(`[Passo 3] A listagem global /items funcionou corretamente. Total de conexões detectadas: ${globalItemsCount}`);
+        } else {
+          const textErr = await resTest.text().catch(() => "");
+          logs.push(`[Passo 3] A listagem global falhou (Status ${resTest.status}): ${textErr.substring(0, 200)}`);
+          steps[2].status = "COMPLETED"; // Declarado completado mas com aviso amigável
+          steps[2].details = `Restrito/Personal (HTTP ${resTest.status}). O app usará Item IDs manuais.`;
+          logs.push(`[Passo 3] Credenciais de nível Personal/Free detectadas (listagem global restrita). Isso é perfeitamente normal; o FINCANVAS prosseguirá usando seus Item IDs individuais.`);
         }
-        logs.push(`[Passo 3] Headers aplicados no fetch: ${JSON.stringify(maskedHeaders)}`);
+      } catch (listErr: any) {
+        logs.push(`[Passo 3] Erro ao carregar listagem global: ${listErr.message}`);
+        steps[2].status = "COMPLETED";
+        steps[2].details = "Listagem de workspace indisponível. Continuando com validação por ID individual.";
+      }
 
-        try {
-          const resTest = await fetch("https://api.pluggy.ai/items", {
-            headers: option.headers
-          });
-          const resStatus = resTest.status;
-          logs.push(`[Passo 3] Retorno para o formato ${option.name} -> Status: ${resStatus}`);
+      // Passo 4: Validação de Itens Relacionados
+      steps[3].status = "RUNNING";
+      const normalizedIds: string[] = Array.isArray(itemIds) ? itemIds : [];
+      logs.push(`[Passo 4] Validando lista de IDs de Conexão fornecidos (${normalizedIds.length})...`);
 
-          if (resTest.ok) {
-            const data = await resTest.json();
-            itemsList = data.results || [];
-            successHeaderOption = option;
-            logs.push(`[Passo 3] SUCESSO ABSOLUTO! O formato ${option.name} foi aceito pelo Pluggy. Conexões encontradas: ${itemsList.length}`);
-            break;
-          } else {
-            const textResponse = await resTest.text().catch(() => "");
-            logs.push(`[Passo 3] Falha para ${option.name} (Status ${resStatus}): ${textResponse.substring(0, 180)}`);
+      if (normalizedIds.length === 0) {
+        if (isGlobalListOk && globalItemsCount > 0) {
+          steps[3].status = "COMPLETED";
+          steps[3].details = `Nenhum ID específico fornecido pelo cliente, mas a listagem global retornou ${globalItemsCount} itens ativos prontos para uso.`;
+          logs.push(`[Passo 4] Nenhum Item ID manual inserido, mas as conexões globais estão acessíveis.`);
+        } else {
+          steps[3].status = "FAILED";
+          steps[3].details = "Nenhum Item ID manual foi configurado na tela de preferências.";
+          logs.push("[Passo 4] Falha: Para chaves do tipo Personal/Free com listagem global inacessível, você precisa copiar o Item ID da conexão bancária no Meu Pluggy e informá-lo manualmente.");
+        }
+      } else {
+        let successCount = 0;
+        let failCount = 0;
+        for (const id of normalizedIds) {
+          logs.push(`[Passo 4] Checando validade do Item ID individual: ${id}...`);
+          try {
+            const item = await PluggyService.getItem(apiKey, id);
+            successCount++;
+            logs.push(`[Passo 4] SUCESSO! Conexão de Item ID ${id} validada na API (Status: ${item.status || "N/A"}).`);
+          } catch (itemErr: any) {
+            failCount++;
+            logs.push(`[Passo 4] FALHA: Não foi possível obter acesso para o Item ID ${id}. Erro: ${itemErr.message}`);
           }
-        } catch (optionErr: any) {
-          logs.push(`[Passo 3] Erro de rede/requisição no formato ${option.name}: ${optionErr.message}`);
+        }
+        
+        if (successCount > 0) {
+          steps[3].status = "COMPLETED";
+          steps[3].details = `Seus ${successCount} item(ns) de conexão configurado(s) foram verificado(s) com sucesso na Pluggy.`;
+        } else {
+          steps[3].status = "FAILED";
+          steps[3].details = `Falha total: Nenhum dos ${normalizedIds.length} Item ID(s) manual(is) foi aceito ou localizado.`;
         }
       }
-
-      if (!successHeaderOption) {
-        steps[2].status = "FAILED";
-        steps[2].details = "Nenhum formato de cabeçalho de autenticação foi aceito pelo Pluggy.";
-        throw new Error("Todas as variantes de cabeçalho (x-api-key, X-API-KEY, Authorization) foram rejeitadas com erro 401/403. Garanta que o Client ID/Secret correspondem ao mesmo ambiente (Sandbox ou Produção).");
-      }
-
-      steps[2].status = "COMPLETED";
-      steps[2].details = `Localizadas ${itemsList.length} conexões ativas usando ${successHeaderOption.name}.`;
-      logs.push(`[Passo 3] Diagnóstico concluído com sucesso e formato validado (${successHeaderOption.name})!`);
 
       res.json({ success: true, steps, logs });
     } catch (err: any) {
@@ -513,8 +566,13 @@ async function startServer() {
 
   // 2. Criar Conexão de Teste (Itaú Sandbox) programaticamente no Pluggy
   app.post("/api/pluggy/create_sandbox", async (req, res) => {
-    const { clientId, clientSecret, bankConnectorId } = req.body;
+    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
+    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
+    const { bankConnectorId } = req.body;
     try {
+      if (!clientId || !clientSecret) {
+        return res.status(400).json({ error: "Credenciais de API ausentes." });
+      }
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       const itemData = await PluggyService.createSandbox(apiKey, bankConnectorId || 2);
       res.json({ success: true, item: itemData });
@@ -526,11 +584,16 @@ async function startServer() {
 
   // 2.1 Cadastrar Webhook no Pluggy
   app.post("/api/pluggy/create_webhook", async (req, res) => {
-    const { clientId, clientSecret, event, url } = req.body;
+    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
+    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
+    const { event, url } = req.body;
     if (!url) {
       return res.status(400).json({ error: "É necessário fornecer um URL para o webhook." });
     }
     try {
+      if (!clientId || !clientSecret) {
+        return res.status(400).json({ error: "Credenciais de API prontas ausentes." });
+      }
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       const webhook = await PluggyService.createWebhook(apiKey, event || "item/updated", url);
       res.json({ success: true, webhook });
@@ -542,8 +605,12 @@ async function startServer() {
 
   // 2.2 Listar Webhooks cadastrados no Pluggy
   app.post("/api/pluggy/list_webhooks", async (req, res) => {
-    const { clientId, clientSecret } = req.body;
+    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
+    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
     try {
+      if (!clientId || !clientSecret) {
+        return res.status(400).json({ error: "Credenciais prontas ausentes." });
+      }
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       const webhooks = await PluggyService.listWebhooks(apiKey);
       res.json({ success: true, webhooks });
@@ -555,11 +622,16 @@ async function startServer() {
 
   // 2.3 Excluir Webhook cadastrado no Pluggy
   app.post("/api/pluggy/delete_webhook", async (req, res) => {
-    const { clientId, clientSecret, webhookId } = req.body;
+    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
+    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
+    const { webhookId } = req.body;
     if (!webhookId) {
       return res.status(400).json({ error: "O ID do webhook é obrigatório para exclusão." });
     }
     try {
+      if (!clientId || !clientSecret) {
+        return res.status(400).json({ error: "Credenciais prontas ausentes." });
+      }
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       await PluggyService.deleteWebhook(apiKey, webhookId);
       res.json({ success: true, message: "Webhook excluído com sucesso do Pluggy!" });
@@ -595,7 +667,7 @@ async function startServer() {
         receivedWebhookEvents.length = 100;
       }
 
-      console.log(`[Pluggy Webhook Receiver] Evento '${event}' registrado com sucesso. Item: ${item?.id || "N/A"} Status: ${item?.status || "N/A"}`);
+      console.log(`[Pluggy Webhook Receiver] Evento '${event}' registrado com sucesso. Item: ${item?.id || "N/A"} Status: ${item?.status || "N/A"} `);
       res.sendStatus(200);
     } catch (err: any) {
       console.error("[Pluggy Webhook Receiver Error]:", err.message);
@@ -605,7 +677,9 @@ async function startServer() {
 
   // 3. Sincronizar e categorizar transações bancárias do Pluggy com IA (Gemini)
   app.post("/api/pluggy/sync", async (req, res) => {
-    const { clientId, clientSecret, categories, itemIds } = req.body;
+    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
+    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
+    const { categories, itemIds } = req.body;
     const userCategories = categories || [
       'Alimentação', 'Transporte', 'Lazer', 'Saúde', 
       'Educação', 'Moradia', 'Salário', 'Investimentos',
@@ -613,22 +687,42 @@ async function startServer() {
     ];
 
     try {
-      const apiKey = await PluggyService.authenticate(clientId, clientSecret);
-      let items = await PluggyService.listItems(apiKey);
-      console.log(`[Pluggy Sync Endpoint] Encontrados ${items.length} itens totais na API do Pluggy.`);
-
-      // Filtra itens se houver uma lista específica
-      const itemIdsList: string[] = itemIds || [];
-      if (itemIdsList.length > 0) {
-        items = items.filter(item => itemIdsList.includes(item.id));
-        console.log(`[Pluggy Sync Endpoint] Filtrados ${items.length} itens pela lista local de IDs do usuário.`);
+      if (!clientId || !clientSecret) {
+        throw new Error("Chaves de API do Pluggy ausentes ou incompletas.");
       }
+      const apiKey = await PluggyService.authenticate(clientId, clientSecret);
+      
+      let items: any[] = [];
+      const itemIdsList: string[] = Array.isArray(itemIds) ? itemIds : [];
+
+      if (itemIdsList.length > 0) {
+        console.log(`[Pluggy Sync Endpoint] Realizando sync focado em ${itemIdsList.length} Item IDs fornecidos pelo cliente.`);
+        for (const id of itemIdsList) {
+          try {
+            const itemData = await PluggyService.getItem(apiKey, id);
+            items.push(itemData);
+          } catch (itemErr: any) {
+            console.warn(`[Pluggy Sync Endpoint] Fallback para item ${id}:`, itemErr.message);
+            items.push({ id, status: "UPDATED" }); 
+          }
+        }
+      } else {
+        console.log(`[Pluggy Sync Endpoint] Tentando listagem global já que nenhum ID de conexão específico foi fornecido.`);
+        try {
+          items = await PluggyService.listItems(apiKey);
+        } catch (listErr: any) {
+          console.error(`[Pluggy Sync Endpoint] Falha ao listar itens:`, listErr.message);
+          throw new Error("Sua chave de API do Pluggy não possui permissões completas de listagem global. Por favor, cole e adicione o seu Item ID de conexão bancária manualmente na aba de configurações.");
+        }
+      }
+
+      console.log(`[Pluggy Sync Endpoint] Mapeados ${items.length} itens totais para sincronização direta.`);
 
       if (items.length === 0) {
         return res.json({ 
           success: true, 
           transactions: [], 
-          message: "Nenhuma conexão ativa cadastrada. Por favor, vincule suas contas reais pelo console da Pluggy antes de sincronizar!" 
+          message: "Nenhuma conexão bancária ativa configurada. Vincule uma conexão real ou insira um Item ID de conexão manual na aba de preferências!" 
         });
       }
 
