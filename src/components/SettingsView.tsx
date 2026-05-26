@@ -230,7 +230,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
       </header>
       
       <div className={`flex-1 p-4 md:p-8 w-full sm:pb-8 flex flex-col ${isMobileMenu ? 'overflow-hidden pb-20' : 'overflow-y-auto pb-24'}`}>
-        <div className="max-w-4xl mx-auto flex flex-col md:flex-row gap-0 md:gap-8 flex-1 w-full relative">
+        <div className="max-w-6xl xl:max-w-7xl mx-auto flex flex-col md:flex-row gap-0 md:gap-8 flex-1 w-full relative">
           <aside className={`w-full md:w-64 flex-shrink-0 flex-col gap-2.5 md:gap-2 pb-2 md:pb-0 h-full overflow-y-auto md:overflow-y-visible ${isMobileMenu ? 'flex' : 'hidden md:flex'}`}>
             <button 
               onClick={() => { setActivePanel('perfil'); setIsMobileMenu(false); }}
