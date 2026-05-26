@@ -333,50 +333,57 @@ async function startServer() {
   // Parse large payloads (receipt images)
   app.use(express.json({ limit: "50mb" }));
 
+  // Helper to retrieve and validate Pluggy credentials securely in backend
+  const getPluggyCredentialsOrThrow = () => {
+    const clientId = process.env.PLUGGY_CLIENT_ID?.trim();
+    const clientSecret = process.env.PLUGGY_CLIENT_SECRET?.trim();
+    if (!clientId || !clientSecret) {
+      const error = new Error("Credenciais da Pluggy ausentes no servidor. Configure PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET no painel de Secrets ou no arquivo .env.");
+      (error as any).code = "PLUGGY_CREDENTIALS_MISSING";
+      throw error;
+    }
+    return { clientId, clientSecret };
+  };
+
+  const isUuid = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id || "");
+
   // 0. Check secure credentials status
   app.get("/api/pluggy/credentials_status", (req, res) => {
-    const hasEnv = !!(process.env.PLUGGY_CLIENT_ID && process.env.PLUGGY_CLIENT_SECRET);
-    res.json({ configured: hasEnv });
+    try {
+      getPluggyCredentialsOrThrow();
+      res.json({ configured: true });
+    } catch {
+      res.json({ configured: false });
+    }
   });
 
   // 1. Testar Credenciais da API Privada do Pluggy
   app.post("/api/pluggy/test", async (req, res) => {
-    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
-    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
     try {
-      if (!clientId || !clientSecret) {
-        throw new Error("Client ID ou Client Secret ausente. Certifique-se de configurar as chaves no servidor (.env) ou digitá-las.");
-      }
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
       await PluggyService.authenticate(clientId, clientSecret);
       res.json({ success: true, message: "Par de chaves do Pluggy validado com sucesso!" });
     } catch (err: any) {
       console.error("[Pluggy Test HTTP Router Error]:", err.message);
-      res.status(401).json({ error: err.message || "Erro de login na Pluggy." });
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 401).json({ error: err.message || "Erro de login na Pluggy." });
     }
   });
 
   // 1.1 Listar conexões (items) ativas do Pluggy
   app.post("/api/pluggy/list_items", async (req, res) => {
-    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
-    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
-    const { itemIds } = req.body;
     try {
-      if (!clientId || !clientSecret) {
-        return res.status(400).json({ error: "Credenciais de API do Pluggy não fornecidas ou incompletas." });
-      }
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
+      const { itemIds } = req.body;
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       
       let items: any[] = [];
-      try {
-        items = await PluggyService.listItems(apiKey);
-      } catch (listErr: any) {
-        console.warn("[Pluggy list_items] Global workspace listing failed or restricted:", listErr.message);
-      }
+      let globalListingRestricted = false;
+      let requiresManualItemId = false;
 
-      // If global workspace list is empty or restricted, but we have specific IDs, fetch individually
-      const listIds: string[] = Array.isArray(itemIds) ? itemIds : [];
-      if (items.length === 0 && listIds.length > 0) {
-        console.log(`[Pluggy list_items] Falling back to fetching ${listIds.length} item(s) individually...`);
+      const listIds: string[] = Array.isArray(itemIds) ? itemIds.filter(Boolean) : [];
+
+      if (listIds.length > 0) {
+        console.log(`[Pluggy list_items] Fetching specific item IDs:`, listIds);
         for (const id of listIds) {
           try {
             const item = await PluggyService.getItem(apiKey, id);
@@ -385,40 +392,118 @@ async function startServer() {
             console.error(`[Pluggy list_items] Failed to get single item ${id}:`, itemErr.message);
           }
         }
+      } else {
+        try {
+          items = await PluggyService.listItems(apiKey);
+        } catch (listErr: any) {
+          console.warn("[Pluggy list_items] Global workspace listing failed or restricted:", listErr.message);
+          globalListingRestricted = true;
+          requiresManualItemId = true;
+          return res.json({
+            ok: true,
+            success: true,
+            items: [],
+            globalListingRestricted: true,
+            requiresManualItemId: true,
+            message: "Credenciais OK, mas sua conta não permite listagem de todos os items de forma global. Adicione o seu Item ID de conexão manual na aba de preferências para começar."
+          });
+        }
       }
 
-      res.json({ success: true, items });
+      res.json({ success: true, ok: true, items, globalListingRestricted, requiresManualItemId });
     } catch (err: any) {
       console.error("[Pluggy list_items HTTP Router Error]:", err.message);
-      res.status(err.message.includes("Chaves rejeitadas") ? 401 : 500).json({ error: err.message });
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ error: err.message });
     }
   });
 
   // 1.2 Deletar uma conexão (item) no Pluggy
   app.post("/api/pluggy/delete_item", async (req, res) => {
-    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
-    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
     const { itemId } = req.body;
     if (!itemId) {
       return res.status(400).json({ error: "Item ID é um parâmetro obrigatório de exclusão." });
     }
     try {
-      if (!clientId || !clientSecret) {
-        return res.status(400).json({ error: "Credenciais do Pluggy ausentes." });
-      }
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       await PluggyService.deleteItem(apiKey, itemId);
       res.json({ success: true, message: "Conexão deletada com sucesso!" });
     } catch (err: any) {
       console.error("[Pluggy delete_item HTTP Router Error]:", err.message);
-      res.status(500).json({ error: err.message });
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ error: err.message });
+    }
+  });
+
+  // 1.2.1 Validar Item ID de conexão manual
+  app.post("/api/pluggy/validate_item", async (req, res) => {
+    try {
+      const { itemId } = req.body;
+
+      if (!itemId || !isUuid(itemId)) {
+        return res.status(400).json({
+          ok: false,
+          code: "INVALID_ITEM_ID",
+          message: "Item ID inválido. Por favor forneça um UUID válido da conexão Pluggy."
+        });
+      }
+
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
+      const apiKey = await PluggyService.authenticate(clientId, clientSecret);
+      const item = await PluggyService.getItem(apiKey, itemId);
+
+      return res.json({
+        ok: true,
+        item: {
+          id: item.id,
+          status: item.status,
+          connector: item.connector?.name ?? item.provider?.name ?? "Pluggy Connector",
+          createdAt: (item as any).createdAt ?? (item as any).created_at,
+          updatedAt: (item as any).updatedAt ?? (item as any).updated_at
+        }
+      });
+    } catch (error: any) {
+      console.error("[Pluggy Validate Item Exception]:", error.message);
+      let message = error.message || "Não foi possível validar o Item ID.";
+      let status = 500;
+      let code = "PLUGGY_VALIDATE_ITEM_FAILED";
+
+      if (message.toLowerCase().includes("not found") || message.includes("404")) {
+        status = 404;
+        code = "PLUGGY_ITEM_NOT_FOUND";
+        message = "Item ID não encontrado na base de dados da Pluggy.";
+      } else if (message.includes("401") || message.includes("403")) {
+        status = 403;
+        code = "PLUGGY_ITEM_ACCESS_RESTRICTED";
+        message = "Esse Item ID não pertence às credenciais Pluggy configuradas ou seu plano não permite esse acesso.";
+      } else if (error.code === "PLUGGY_CREDENTIALS_MISSING") {
+        status = 400;
+        code = error.code;
+      }
+
+      return res.status(status).json({
+        ok: false,
+        code,
+        message
+      });
+    }
+  });
+
+  // 1.2.2 Gerar Token de Conectividade do Widget Pluggy Connect
+  app.post("/api/pluggy/connect_token", async (req, res) => {
+    try {
+      const { clientUserId, itemId } = req.body;
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
+      const apiKey = await PluggyService.authenticate(clientId, clientSecret);
+      const data = await PluggyService.createConnectToken(apiKey, clientUserId, itemId);
+      res.json({ success: true, connectToken: data.accessToken || data.token || data.connectToken });
+    } catch (err: any) {
+      console.error("[Pluggy connect_token HTTP Router Error]:", err.message);
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ error: err.message });
     }
   });
 
   // 1.3 Adicionar um canal de diagnóstico ao vivo da Pluggy
   app.post("/api/pluggy/diagnose", async (req, res) => {
-    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
-    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
     const { itemIds } = req.body;
     
     const logs: string[] = [];
@@ -431,21 +516,16 @@ async function startServer() {
 
     logs.push("[Diagnóstico] Iniciando varredura e testes ao vivo para o Pluggy...");
     try {
-      // Passo 1: Verificação local com higienização completa
+      // Passo 1: Verificação local com de credenciais seguras no servidor
       steps[0].status = "RUNNING";
-      logs.push("[Passo 1] Analisando e limpando o preenchimento dos parâmetros...");
+      logs.push("[Passo 1] Analisando existência e preenchimento das credenciais do servidor...");
       
-      const cleanId = (clientId || "").trim().replace(/[\r\n\t\s]/g, "");
-      const cleanSecret = (clientSecret || "").trim().replace(/[\r\n\t\s]/g, "");
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
+      const cleanId = clientId.trim().replace(/[\r\n\t\s]/g, "");
+      const cleanSecret = clientSecret.trim().replace(/[\r\n\t\s]/g, "");
 
-      if (!cleanId || !cleanSecret) {
-        steps[0].status = "FAILED";
-        steps[0].details = "Client ID ou Secret em branco ou indisponíveis.";
-        throw new Error("Chaves em branco. Por favor forneça seu Client ID e Client Secret antes de prosseguir.");
-      }
-      
       steps[0].status = "COMPLETED";
-      steps[0].details = "Credenciais localizadas e bem-formatadas.";
+      steps[0].details = "Credenciais localizadas no servidor.";
       logs.push(`[Passo 1] Parâmetros validados! Client ID mascarado: "${cleanId.substring(0, 8)}..."`);
 
       // Passo 2: Handshake do Servidor
@@ -566,78 +646,62 @@ async function startServer() {
 
   // 2. Criar Conexão de Teste (Itaú Sandbox) programaticamente no Pluggy
   app.post("/api/pluggy/create_sandbox", async (req, res) => {
-    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
-    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
     const { bankConnectorId } = req.body;
     try {
-      if (!clientId || !clientSecret) {
-        return res.status(400).json({ error: "Credenciais de API ausentes." });
-      }
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       const itemData = await PluggyService.createSandbox(apiKey, bankConnectorId || 2);
       res.json({ success: true, item: itemData });
     } catch (err: any) {
       console.error("[Pluggy create_sandbox HTTP Router Error]:", err.message);
-      res.status(500).json({ error: err.message });
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ error: err.message });
     }
   });
 
   // 2.1 Cadastrar Webhook no Pluggy
   app.post("/api/pluggy/create_webhook", async (req, res) => {
-    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
-    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
     const { event, url } = req.body;
     if (!url) {
       return res.status(400).json({ error: "É necessário fornecer um URL para o webhook." });
     }
     try {
-      if (!clientId || !clientSecret) {
-        return res.status(400).json({ error: "Credenciais de API prontas ausentes." });
-      }
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       const webhook = await PluggyService.createWebhook(apiKey, event || "item/updated", url);
       res.json({ success: true, webhook });
     } catch (err: any) {
       console.error("[Pluggy create_webhook HTTP Router Error]:", err.message);
-      res.status(500).json({ error: err.message });
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ error: err.message });
     }
   });
 
   // 2.2 Listar Webhooks cadastrados no Pluggy
   app.post("/api/pluggy/list_webhooks", async (req, res) => {
-    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
-    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
     try {
-      if (!clientId || !clientSecret) {
-        return res.status(400).json({ error: "Credenciais prontas ausentes." });
-      }
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       const webhooks = await PluggyService.listWebhooks(apiKey);
       res.json({ success: true, webhooks });
     } catch (err: any) {
       console.error("[Pluggy list_webhooks HTTP Router Error]:", err.message);
-      res.status(500).json({ error: err.message });
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ error: err.message });
     }
   });
 
   // 2.3 Excluir Webhook cadastrado no Pluggy
   app.post("/api/pluggy/delete_webhook", async (req, res) => {
-    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
-    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
     const { webhookId } = req.body;
     if (!webhookId) {
       return res.status(400).json({ error: "O ID do webhook é obrigatório para exclusão." });
     }
     try {
-      if (!clientId || !clientSecret) {
-        return res.status(400).json({ error: "Credenciais prontas ausentes." });
-      }
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       await PluggyService.deleteWebhook(apiKey, webhookId);
       res.json({ success: true, message: "Webhook excluído com sucesso do Pluggy!" });
     } catch (err: any) {
       console.error("[Pluggy delete_webhook HTTP Router Error]:", err.message);
-      res.status(500).json({ error: err.message });
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ error: err.message });
     }
   });
 
@@ -677,8 +741,6 @@ async function startServer() {
 
   // 3. Sincronizar e categorizar transações bancárias do Pluggy com IA (Gemini)
   app.post("/api/pluggy/sync", async (req, res) => {
-    const clientId = process.env.PLUGGY_CLIENT_ID || req.body.clientId;
-    const clientSecret = process.env.PLUGGY_CLIENT_SECRET || req.body.clientSecret;
     const { categories, itemIds } = req.body;
     const userCategories = categories || [
       'Alimentação', 'Transporte', 'Lazer', 'Saúde', 
@@ -687,13 +749,11 @@ async function startServer() {
     ];
 
     try {
-      if (!clientId || !clientSecret) {
-        throw new Error("Chaves de API do Pluggy ausentes ou incompletas.");
-      }
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       
       let items: any[] = [];
-      const itemIdsList: string[] = Array.isArray(itemIds) ? itemIds : [];
+      const itemIdsList: string[] = Array.isArray(itemIds) ? itemIds.filter(Boolean) : [];
 
       if (itemIdsList.length > 0) {
         console.log(`[Pluggy Sync Endpoint] Realizando sync focado em ${itemIdsList.length} Item IDs fornecidos pelo cliente.`);
@@ -712,17 +772,35 @@ async function startServer() {
           items = await PluggyService.listItems(apiKey);
         } catch (listErr: any) {
           console.error(`[Pluggy Sync Endpoint] Falha ao listar itens:`, listErr.message);
-          throw new Error("Sua chave de API do Pluggy não possui permissões completas de listagem global. Por favor, cole e adicione o seu Item ID de conexão bancária manualmente na aba de configurações.");
+          return res.status(200).json({
+            ok: false,
+            success: false,
+            code: "PLUGGY_ITEM_ID_REQUIRED",
+            message: "Credenciais Pluggy autenticadas, mas nenhuma conexão bancária foi vinculada. Adicione um Item ID manual ou conecte uma conta via Pluggy Connect."
+          });
         }
       }
 
       console.log(`[Pluggy Sync Endpoint] Mapeados ${items.length} itens totais para sincronização direta.`);
 
       if (items.length === 0) {
-        return res.json({ 
-          success: true, 
-          transactions: [], 
-          message: "Nenhuma conexão bancária ativa configurada. Vincule uma conexão real ou insira um Item ID de conexão manual na aba de preferências!" 
+        return res.status(200).json({ 
+          ok: false,
+          success: false,
+          code: "PLUGGY_ITEM_ID_REQUIRED",
+          message: "Credenciais Pluggy autenticadas, mas nenhuma conexão bancária foi vinculada. Adicione um Item ID manual ou conecte uma conta via Pluggy Connect."
+        });
+      }
+
+      // Check for item errors or if they need reconnect
+      const badItems = items.filter(it => it.status && ["LOGIN_ERROR", "OUTDATED", "NEEDS_RECONNECT"].includes(it.status));
+      if (badItems.length > 0 && items.length === badItems.length) {
+        // All configured items are broken and need reconnect
+        return res.status(200).json({
+          ok: false,
+          success: false,
+          code: "PLUGGY_ITEM_NOT_UPDATED",
+          message: `Suas conexões (${badItems.map(it => it.id).join(', ').substring(0, 40) || ""}) reportaram status de falha (${badItems[0].status}). Reconecte as suas contas para continuar.`
         });
       }
 
@@ -731,7 +809,12 @@ async function startServer() {
       console.log(`[Pluggy Sync Endpoint] Extraídas ${rawTransactionsBatch.length} transações brutas para processamento com IA.`);
 
       if (rawTransactionsBatch.length === 0) {
-        return res.json({ success: true, transactions: [], message: "Nenhuma movimentação bancária foi identificada nos últimos 30 dias." });
+        return res.json({ 
+          success: true, 
+          ok: true, 
+          transactions: [], 
+          message: "Sincronização OK! Nenhuma movimentação bancária foi identificada nos últimos 30 dias de extrato." 
+        });
       }
 
       const ai = getAiClient();
@@ -888,10 +971,15 @@ Retorne obrigatoriamente um array JSON correspondendo a cada 'pluggyId' recebido
         }
       }
 
-      res.json({ success: true, transactions: categorizedList });
+      res.json({ success: true, ok: true, transactions: categorizedList });
     } catch (err: any) {
       console.error("[Pluggy sync HTTP Router Error]:", err.message);
-      res.status(500).json({ error: err.message });
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ 
+        ok: false,
+        success: false, 
+        error: err.message, 
+        code: err.code || "PLUGGY_SYNC_FAILED" 
+      });
     }
   });
 

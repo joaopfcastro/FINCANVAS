@@ -34,12 +34,11 @@ service cloud.firestore {
     
     function isValidUserProfile(data) {
       return data.keys().hasAll(['userId', 'highSpendingAlerts', 'createdAt', 'updatedAt']) &&
-             data.size() >= 4 && data.size() <= 10 &&
+             data.size() >= 4 && data.size() <= 9 &&
              (!data.keys().hasAny(['categories']) || (data.categories is list && data.categories.size() <= 100 && (data.categories.size() == 0 || data.categories[0] is string))) &&
              (!data.keys().hasAny(['darkMode']) || data.darkMode is bool) &&
              (!data.keys().hasAny(['phone']) || (data.phone is string && data.phone.size() <= 20)) &&
              (!data.keys().hasAny(['pluggyClientId']) || (data.pluggyClientId is string && data.pluggyClientId.size() <= 200)) &&
-             (!data.keys().hasAny(['pluggyClientSecret']) || (data.pluggyClientSecret is string && data.pluggyClientSecret.size() <= 200)) &&
              (!data.keys().hasAny(['pluggyItemIds']) || (data.pluggyItemIds is list && data.pluggyItemIds.size() <= 100 && (data.pluggyItemIds.size() == 0 || data.pluggyItemIds[0] is string))) &&
              data.userId is string && data.userId == request.auth.uid &&
              data.highSpendingAlerts is bool &&
@@ -94,7 +93,7 @@ service cloud.firestore {
         incoming().userId == existing().userId && 
         incoming().createdAt == existing().createdAt && 
         incoming().updatedAt == request.time && 
-        incoming().diff(existing()).affectedKeys().hasOnly(['highSpendingAlerts', 'categories', 'darkMode', 'phone', 'pluggyClientId', 'pluggyClientSecret', 'pluggyItemIds', 'updatedAt'])
+        incoming().diff(existing()).affectedKeys().hasOnly(['highSpendingAlerts', 'categories', 'darkMode', 'phone', 'pluggyClientId', 'pluggyItemIds', 'updatedAt'])
       );
     }
   }

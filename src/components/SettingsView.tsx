@@ -62,10 +62,10 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
 
   // Estados de Integração Pluggy
   const [pluggyClientId, setPluggyClientId] = useState(profile.pluggyClientId || '');
-  const [pluggyClientSecret, setPluggyClientSecret] = useState(profile.pluggyClientSecret || '');
   const [isPluggyConfiguredOnServer, setIsPluggyConfiguredOnServer] = useState(false);
   const [manualItemIdInput, setManualItemIdInput] = useState('');
   const [isSavingPluggy, setIsSavingPluggy] = useState(false);
+  const [isLoadingConnect, setIsLoadingConnect] = useState(false);
   const [isTestingPluggy, setIsTestingPluggy] = useState(false);
   const [isSyncingPluggy, setIsSyncingPluggy] = useState(false);
   const [isCreatingSandbox, setIsCreatingSandbox] = useState(false);
@@ -223,32 +223,95 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
     }
   };
 
-  const handleSavePluggyKeys = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSavingPluggy(true);
-    const cleanId = pluggyClientId.trim();
-    const cleanSecret = pluggyClientSecret.trim();
+  const handleOpenPluggyConnect = async (reconnectItemId?: string) => {
+    setIsLoadingConnect(true);
     try {
-      const ref = doc(db, 'users', user.uid);
-      await updateDoc(ref, {
-        pluggyClientId: cleanId,
-        pluggyClientSecret: cleanSecret,
-        updatedAt: serverTimestamp()
+      const res = await fetch('/api/pluggy/connect_token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientUserId: user.uid, itemId: reconnectItemId })
       });
-      setPluggyClientId(cleanId);
-      setPluggyClientSecret(cleanSecret);
-      toast.success('Chaves do Pluggy integradas com sucesso!');
-    } catch (err) {
+      const data = await safeJsonClient(res);
+      if (!res.ok || !data.success || !data.connectToken) {
+        throw new Error(data.error || 'Erro ao gerar token para o Pluggy Connect.');
+      }
+
+      const connectToken = data.connectToken;
+
+      // Carregar dinamicamente o script se não estiver presente
+      if (!(window as any).PluggyConnect) {
+        await new Promise<void>((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = 'https://connect.pluggy.ai/v2/connect.js';
+          script.async = true;
+          script.onload = () => resolve();
+          script.onerror = (err) => reject(new Error('Erro ao carregar script do Pluggy Connect.'));
+          document.body.appendChild(script);
+        });
+      }
+
+      // Inicializa o widget
+      const pluggyConnect = new (window as any).PluggyConnect({
+        connectToken,
+        onSuccess: async (connectData: any) => {
+          console.log('[Pluggy Connect SUCCESS event]:', connectData);
+          const itemId = connectData.item?.id;
+          if (itemId) {
+            toast.success(`Conexão com ${connectData.item?.connector?.name || 'sua instituição'} efetuada com sucesso!`);
+            
+            // Validar e salvar de modo seguro no Firestore
+            try {
+              toast.loading('Validando conexão com a Pluggy...', { id: 'validate-new-item' });
+              const valRes = await fetch('/api/pluggy/validate_item', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ itemId })
+              });
+              const valData = await safeJsonClient(valRes);
+              if (valRes.ok && valData.ok) {
+                const currentItemIds = profile.pluggyItemIds || [];
+                if (!currentItemIds.includes(itemId)) {
+                  await updateDoc(doc(db, 'users', user.uid), {
+                    pluggyItemIds: [...currentItemIds, itemId],
+                    updatedAt: serverTimestamp()
+                  });
+                }
+                toast.dismiss('validate-new-item');
+                toast.success(`Conta sincronizada e conectada: ${valData.item?.connector || 'Pluggy'}!`);
+                await loadPluggyItems();
+              } else {
+                toast.dismiss('validate-new-item');
+                toast.error(valData.message || 'Falha ao validar a nova conexão.');
+              }
+            } catch (err: any) {
+              toast.dismiss('validate-new-item');
+              console.error(err);
+              toast.error('Erro na validação pós-conexão.');
+            }
+          }
+        },
+        onError: (error: any) => {
+          console.error('[Pluggy Connect ERROR event]:', error);
+          toast.error('Ocorreu um erro no widget da Pluggy.');
+        }
+      });
+
+      if (typeof pluggyConnect.init === 'function') {
+        pluggyConnect.init();
+      } else if (typeof pluggyConnect.open === 'function') {
+        pluggyConnect.open();
+      }
+    } catch (err: any) {
       console.error(err);
-      toast.error('Erro ao registrar suas credenciais.');
+      toast.error(err.message || 'Erro ao inicializar o Pluggy Connect.');
     } finally {
-      setIsSavingPluggy(false);
+      setIsLoadingConnect(false);
     }
   };
 
   const handleTestPluggyKeys = async () => {
-    if (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer) {
-      toast.error('Informe o Client ID e Client Secret antes de realizar o teste.');
+    if (!isPluggyConfiguredOnServer) {
+      toast.error('Configure as credenciais no .env do servidor para testar a conexão.');
       return;
     }
     setIsTestingPluggy(true);
@@ -265,8 +328,6 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          clientId: pluggyClientId,
-          clientSecret: pluggyClientSecret,
           itemIds: profile.pluggyItemIds || []
         })
       });
@@ -294,8 +355,8 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const handleCreateSandbox = async () => {
-    if (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer) {
-      toast.error('Por favor, informe e salve as credenciais do Pluggy primeiro.');
+    if (!isPluggyConfiguredOnServer) {
+      toast.error('Por favor, certifique-se de que a Pluggy está configurada no servidor primeiro.');
       return;
     }
     setIsCreatingSandbox(true);
@@ -303,7 +364,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
       const res = await fetch('/api/pluggy/create_sandbox', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientId: pluggyClientId, clientSecret: pluggyClientSecret, bankConnectorId: 2 })
+        body: JSON.stringify({ bankConnectorId: 2 })
       });
       const data = await safeJsonClient(res);
       if (res.ok && data.success) {
@@ -332,8 +393,8 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const handleSyncPluggyTransactions = async () => {
-    if (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer) {
-      toast.error('Chaves do Pluggy não detectadas ou incompletas.');
+    if (!isPluggyConfiguredOnServer) {
+      toast.error('A integração da Pluggy não está configurada ou ativa no servidor.');
       return;
     }
     setIsSyncingPluggy(true);
@@ -343,8 +404,6 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          clientId: pluggyClientId,
-          clientSecret: pluggyClientSecret,
           categories: profile.categories || [],
           itemIds: profile.pluggyItemIds || []
         })
@@ -460,15 +519,13 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const loadPluggyItems = async () => {
-    if (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer) return;
+    if (!isPluggyConfiguredOnServer) return;
     setIsLoadingItems(true);
     try {
       const res = await fetch('/api/pluggy/list_items', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          clientId: pluggyClientId,
-          clientSecret: pluggyClientSecret,
           itemIds: profile.pluggyItemIds || []
         })
       });
@@ -494,8 +551,6 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          clientId: pluggyClientId,
-          clientSecret: pluggyClientSecret,
           itemId
         })
       });
@@ -520,13 +575,13 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const loadPluggyWebhooks = async () => {
-    if (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer) return;
+    if (!isPluggyConfiguredOnServer) return;
     setIsLoadingWebhooks(true);
     try {
       const res = await fetch('/api/pluggy/list_webhooks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientId: pluggyClientId, clientSecret: pluggyClientSecret })
+        body: JSON.stringify({})
       });
       const data = await safeJsonClient(res);
       if (res.ok && data.success) {
@@ -543,8 +598,8 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
 
   const handleRegisterWebhook = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer) {
-      toast.error('Grave as chaves Pluggy Client ID e Secret antes de criar webhooks.');
+    if (!isPluggyConfiguredOnServer) {
+      toast.error('Configure as chaves Pluggy no servidor antes de criar webhooks.');
       return;
     }
     if (!webhookUrl.trim()) {
@@ -557,8 +612,6 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          clientId: pluggyClientId,
-          clientSecret: pluggyClientSecret,
           event: 'item/updated',
           url: webhookUrl.trim()
         })
@@ -587,8 +640,6 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          clientId: pluggyClientId,
-          clientSecret: pluggyClientSecret,
           webhookId
         })
       });
@@ -639,17 +690,33 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
     }
 
     try {
+      toast.loading('Validando ID de Conexão com a Pluggy...', { id: 'validate-item' });
+      const valRes = await fetch('/api/pluggy/validate_item', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ itemId: rawId })
+      });
+      const valData = await safeJsonClient(valRes);
+      
+      if (!valRes.ok || !valData.ok) {
+        toast.dismiss('validate-item');
+        toast.error(valData.message || 'ID de conexão inválido ou inacessível.');
+        return;
+      }
+
       const updatedItemIds = [...currentItemIds, rawId];
       await updateDoc(doc(db, 'users', user.uid), {
         pluggyItemIds: updatedItemIds,
         updatedAt: serverTimestamp()
       });
       setManualItemIdInput('');
-      toast.success('ID de Conexão cadastrado com sucesso!');
+      toast.dismiss('validate-item');
+      toast.success(`ID de Conexão (${valData.item?.connector || 'Pluggy'}) cadastrado e validado com sucesso!`);
       await loadPluggyItems();
     } catch (err: any) {
+      toast.dismiss('validate-item');
       console.error(err);
-      toast.error('Erro ao salvar o ID no Firestore.');
+      toast.error('Erro ao salvar o ID ou validar no Firestore.');
     }
   };
 
@@ -690,12 +757,12 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   }, []);
 
   React.useEffect(() => {
-    if (activePanel === 'pluggy' && (isPluggyConfiguredOnServer || (pluggyClientId && pluggyClientSecret))) {
+    if (activePanel === 'pluggy' && isPluggyConfiguredOnServer) {
       loadPluggyItems();
       loadPluggyWebhooks();
       loadCapturedEvents();
     }
-  }, [activePanel, pluggyClientId, pluggyClientSecret, isPluggyConfiguredOnServer, profile.pluggyItemIds]);
+  }, [activePanel, isPluggyConfiguredOnServer, profile.pluggyItemIds]);
 
   return (
     <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -968,7 +1035,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
 
                 <div className="bg-gradient-to-br from-emerald-500/10 to-teal-500/10 dark:from-emerald-950/20 dark:to-teal-950/20 p-5 rounded-2xl border border-emerald-500/20 shadow-sm">
                   <div className="flex gap-4">
-                    <div className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 p-3 rounded-2xl h-fit">
+                    <div className="bg-emerald-505/10 text-emerald-600 dark:text-emerald-400 p-3 rounded-2xl h-fit">
                       <Radio className="w-6 h-6 animate-pulse" />
                     </div>
                     <div>
@@ -981,88 +1048,119 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                 </div>
 
                 {isPluggyConfiguredOnServer ? (
-                  <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 p-5 rounded-2xl space-y-3">
+                  <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 p-5 rounded-2xl space-y-4">
                     <div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-400">
                       <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
                       <span className="font-bold text-[14px]">Credenciais Ativas Seguras no Servidor</span>
                     </div>
-                    <p className="text-xs text-slate-600 dark:text-slate-450 leading-relaxed">
+                    <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
                       O servidor do FINCANVAS está carregando suas credenciais da API Privada do Pluggy diretamente do arquivo seguro de variáveis de ambiente do ambiente de produção (<code>.env</code>). Não é necessário fornecer credenciais manuais pelo navegador.
                     </p>
-                    <div className="flex pt-1">
+
+                    {/* Status das credenciais do servidor e conexões */}
+                    <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4 font-sans">
+                      <div className="text-[12px] font-bold text-slate-400 uppercase tracking-wider mb-2">Painel de Diagnóstico da Conexão:</div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs leading-relaxed font-mono">
+                        {/* Estado 1: Credenciais no servidor */}
+                        <div className="flex items-center gap-2 bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
+                          <span className="text-slate-300">Credenciais do Servidor:</span>
+                          <span className="text-emerald-400 font-bold ml-auto">Configuradas</span>
+                        </div>
+
+                        {/* Estado 2: Autenticação via Diagnóstico */}
+                        <div className="flex items-center gap-2 bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
+                          <span className="text-slate-300">Autenticação com a API:</span>
+                          <span className="text-emerald-400 font-bold ml-auto">Autenticação OK</span>
+                        </div>
+
+                        {/* Estado 3: Item ID Conectado */}
+                        <div className="flex items-center gap-2 bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                          <div className={`w-2.5 h-2.5 rounded-full ${(!profile.pluggyItemIds || profile.pluggyItemIds.length === 0) ? 'bg-amber-500' : 'bg-emerald-500'}`}></div>
+                          <span className="text-slate-300">Vínculo de Conexões:</span>
+                          <span className={`font-bold ml-auto ${(!profile.pluggyItemIds || profile.pluggyItemIds.length === 0) ? 'text-amber-400' : 'text-emerald-400'}`}>
+                            {(!profile.pluggyItemIds || profile.pluggyItemIds.length === 0) ? 'Aguardando Item ID' : 'Item Validado'}
+                          </span>
+                        </div>
+
+                        {/* Estado 4: Sincronização e Saúde */}
+                        <div className="flex items-center gap-2 bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                          {pluggyItems.some(i => ["OUTDATED", "LOGIN_ERROR", "NEEDS_RECONNECT"].includes(i.status)) ? (
+                            <>
+                              <div className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></div>
+                              <span className="text-slate-300">Sincronização & Saúde:</span>
+                              <span className="text-rose-455 font-bold ml-auto">Precisa Reconectar</span>
+                            </>
+                          ) : (
+                            <>
+                              <div className={`w-2.5 h-2.5 rounded-full ${pluggyItems.length > 0 ? 'bg-emerald-500' : 'bg-slate-500'}`}></div>
+                              <span className="text-slate-300">Sincronização & Saúde:</span>
+                              <span className={`font-bold ml-auto ${pluggyItems.length > 0 ? 'text-emerald-400' : 'text-slate-500'}`}>
+                                {pluggyItems.length > 0 ? 'Sincronizado' : 'Nenhuma'}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-3 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenPluggyConnect()}
+                        disabled={isLoadingConnect}
+                        className="flex-1 py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-md cursor-pointer transition-all flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
+                      >
+                        {isLoadingConnect ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Link className="w-4 h-4" />
+                        )}
+                        <span>Conectar Conta (Pluggy Connect Widget)</span>
+                      </button>
+
                       <button
                         type="button"
                         onClick={handleTestPluggyKeys}
                         disabled={isTestingPluggy}
-                        className="px-5 py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-bold hover:bg-slate-50 dark:hover:bg-slate-800 text-xs rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
+                        className="py-3 px-4 bg-slate-800 hover:bg-slate-950 text-white border border-slate-700 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
                       >
                         {isTestingPluggy ? (
                           <Loader2 className="w-4 h-4 animate-spin" />
                         ) : (
-                          'Testar Conexão do Servidor'
+                          <RefreshCw className="w-4 h-4" />
                         )}
+                        <span>Testar Conexão</span>
                       </button>
                     </div>
                   </div>
                 ) : (
-                  <form onSubmit={handleSavePluggyKeys} className="space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-2 uppercase tracking-wide">Pluggy Client ID</label>
-                        <div className="relative">
-                          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
-                            <Key className="h-4.5 w-4.5 text-slate-400" />
-                          </div>
-                          <input
-                            type="text"
-                            value={pluggyClientId}
-                            onChange={(e) => setPluggyClientId(e.target.value)}
-                            placeholder="Ex: 5e64ac32-f32a..."
-                            className="w-full bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none transition-all font-mono"
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-2 uppercase tracking-wide">Pluggy Client Secret</label>
-                        <div className="relative">
-                          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
-                            <Key className="h-4.5 w-4.5 text-slate-400" />
-                          </div>
-                          <input
-                            type="password"
-                            value={pluggyClientSecret}
-                            onChange={(e) => setPluggyClientSecret(e.target.value)}
-                            placeholder="••••••••••••••••••••"
-                            className="w-full bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none transition-all font-mono"
-                          />
-                        </div>
-                      </div>
+                  <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 p-5 rounded-2xl space-y-4 shadow-sm">
+                    <div className="flex items-center gap-2 text-amber-800 dark:text-amber-400">
+                      <span className="inline-block w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse"></span>
+                      <span className="font-bold text-[14px]">Credenciais da Pluggy não Detectadas</span>
                     </div>
-
-                    <div className="flex flex-col sm:flex-row gap-2 pt-2">
-                      <button
-                        type="submit"
-                        disabled={isSavingPluggy}
-                        className="flex-1 py-3 bg-slate-800 hover:bg-slate-900 dark:bg-emerald-600 dark:hover:bg-emerald-700 text-white font-bold text-sm rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
-                      >
-                        {isSavingPluggy ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Salvar Chaves'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleTestPluggyKeys}
-                        disabled={isTestingPluggy}
-                        className="px-5 py-3 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold hover:bg-slate-50 dark:hover:bg-slate-800 text-sm rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50 active:scale-[0.98]"
-                      >
-                        {isTestingPluggy ? (
-                          <Loader2 className="w-5 h-5 animate-spin" />
-                        ) : (
-                          'Testar Conexão'
-                        )}
-                      </button>
+                    <p className="text-xs text-slate-650 dark:text-slate-400 leading-relaxed font-mono bg-slate-950 text-slate-350 p-2 rounded-xl">
+                      Status da conexão: <strong className="text-rose-450">Credenciais ausentes de backend (.env).</strong>
+                    </p>
+                    <p className="text-xs text-slate-605 dark:text-slate-400 leading-relaxed font-sans">
+                      Para sua segurança e privacidade, chaves privadas da Pluggy (<strong>Client ID</strong> e <strong>Client Secret</strong>) são tratadas estritamente no backend e nunca expostas ao navegador ou armazenadas no banco de dados do usuário.
+                    </p>
+                    <div className="text-xs bg-slate-900 border border-slate-800 text-slate-100 p-4 rounded-xl space-y-2.5 font-mono leading-relaxed">
+                      <div className="text-amber-400 font-bold uppercase text-[10px] tracking-wide">Como Habilitar a Integração:</div>
+                      <div>1. Abra o arquivo <code className="text-emerald-400">.env</code> na raiz do projeto.</div>
+                      <div>2. Adicione as chaves obtidas no console da Pluggy:</div>
+                      <pre className="text-slate-300 text-[11px] bg-slate-950 p-2.5 rounded border border-slate-800">
+PLUGGY_CLIENT_ID=seu_client_id_aqui{"\n"}
+PLUGGY_CLIENT_SECRET=seu_client_secret_aqui
+                      </pre>
+                      <div>3. O servidor carregará e validará automaticamente a conexão.</div>
                     </div>
-                  </form>
+                  </div>
                 )}
+
+
 
                 {/* --- CADASTRO MANUAL DE ITEM IDS (Free/Personal/Demo/Meu Pluggy) --- */}
                 <div className="border border-slate-100 dark:border-slate-700/60 my-4"></div>
@@ -1188,7 +1286,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <button
                       type="button"
                       onClick={loadPluggyItems}
-                      disabled={isLoadingItems || (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer)}
+                      disabled={isLoadingItems || !isPluggyConfiguredOnServer}
                       className="text-xs font-bold text-emerald-600 hover:text-emerald-700 flex items-center gap-1 disabled:opacity-50"
                       title="Clique para recarregar as contas conectadas do Pluggy"
                     >
@@ -1197,9 +1295,9 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     </button>
                   </div>
 
-                  {!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer ? (
+                  {!isPluggyConfiguredOnServer ? (
                     <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-150 dark:border-slate-800 text-center text-xs text-slate-500">
-                      Salve suas credenciais (Client ID e Secret) acima para visualizar suas conexões ativas.
+                      Configure as credenciais (Client ID e Secret) no .env para visualizar suas conexões ativas.
                     </div>
                   ) : isLoadingItems ? (
                     <div className="flex items-center justify-center py-6 text-slate-400 text-xs">
@@ -1287,7 +1385,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <button
                       type="button"
                       onClick={handleSyncPluggyTransactions}
-                      disabled={isSyncingPluggy || (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer)}
+                      disabled={isSyncingPluggy || !isPluggyConfiguredOnServer}
                       className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-2xl shadow-md shadow-emerald-600/10 hover:shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98]"
                     >
                       {isSyncingPluggy ? (
@@ -1365,7 +1463,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
 
                     <button
                       type="submit"
-                      disabled={isRegisteringWebhook || (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer)}
+                      disabled={isRegisteringWebhook || !isPluggyConfiguredOnServer}
                       className="w-full sm:w-auto px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-45 disabled:cursor-not-allowed active:scale-[0.98]"
                     >
                       {isRegisteringWebhook ? (
@@ -1389,7 +1487,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       <button
                         type="button"
                         onClick={loadPluggyWebhooks}
-                        disabled={isLoadingWebhooks || (!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer)}
+                        disabled={isLoadingWebhooks || !isPluggyConfiguredOnServer}
                         className="text-[11px] font-bold text-indigo-600 hover:indigo-700 flex items-center gap-1 disabled:opacity-50"
                       >
                         {isLoadingWebhooks ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
@@ -1397,9 +1495,9 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       </button>
                     </div>
 
-                    {!pluggyClientId && !pluggyClientSecret && !isPluggyConfiguredOnServer ? (
+                    {!isPluggyConfiguredOnServer ? (
                       <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 text-center text-[11px] text-slate-500">
-                        Insira e salve as chaves API acima para obter a relação de canais ativos.
+                        Configure as chaves API no .env para obter a relação de canais ativos.
                       </div>
                     ) : isLoadingWebhooks ? (
                       <div className="text-center py-4 text-xs text-slate-400 flex items-center justify-center gap-2">

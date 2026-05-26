@@ -26,7 +26,6 @@ export interface UserProfile {
   darkMode?: boolean;
   phone?: string;
   pluggyClientId?: string;
-  pluggyClientSecret?: string;
   pluggyItemIds?: string[];
   createdAt: any;
   updatedAt: any;
