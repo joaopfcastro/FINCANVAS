@@ -3,7 +3,7 @@ import { User, signOut, sendPasswordResetEmail, updateProfile } from 'firebase/a
 import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import { UserProfile, Transaction } from '../App';
 import { doc, updateDoc, serverTimestamp, collection, setDoc, deleteDoc } from 'firebase/firestore';
-import { User as UserIcon, Bell, LogOut, Info, CloudCog, Download, UploadCloud, Trash2, Loader2, Database, Palette, CheckCircle2, ChevronLeft, ChevronRight, Key, RefreshCw, Radio, CreditCard, Link } from 'lucide-react';
+import { User as UserIcon, Bell, LogOut, Info, CloudCog, Download, UploadCloud, Trash2, Loader2, Database, Palette, CheckCircle2, ChevronLeft, ChevronRight, Key, KeyRound, Eye, EyeOff, Check, RefreshCw, Radio, CreditCard, Link } from 'lucide-react';
 import { toast } from 'sonner';
 
 function normalizeText(text: string): string {
@@ -61,7 +61,11 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   const [profileMessage, setProfileMessage] = useState('');
 
   // Estados de Integração Pluggy
-  const [pluggyClientId, setPluggyClientId] = useState(profile.pluggyClientId || '');
+  const [pluggyClientId, setPluggyClientId] = useState(profile.pluggyClientId || localStorage.getItem('PREF_PLUGGY_CLIENT_ID') || '');
+  const [pluggyClientSecret, setPluggyClientSecret] = useState((profile.pluggyClientSecret || localStorage.getItem('PREF_PLUGGY_CLIENT_SECRET')) ? '••••••••••••••••' : '');
+  const [showClientSecret, setShowClientSecret] = useState(false);
+  const [storageMethod, setStorageMethod] = useState<'cloud' | 'local'>(localStorage.getItem('PREF_PLUGGY_CLIENT_SECRET') ? 'local' : 'cloud');
+  const [isSavingCustomKeys, setIsSavingCustomKeys] = useState(false);
   const [isPluggyConfiguredOnServer, setIsPluggyConfiguredOnServer] = useState(false);
   const [manualItemIdInput, setManualItemIdInput] = useState('');
   const [isSavingPluggy, setIsSavingPluggy] = useState(false);
@@ -223,12 +227,117 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
     }
   };
 
+  const getPluggyHeaders = () => {
+    let cid = pluggyClientId;
+    let csec = pluggyClientSecret;
+
+    if (csec === '••••••••••••••••') {
+      csec = localStorage.getItem('PREF_PLUGGY_CLIENT_SECRET') || profile.pluggyClientSecret || '';
+    }
+
+    if (!cid) {
+      cid = localStorage.getItem('PREF_PLUGGY_CLIENT_ID') || profile.pluggyClientId || '';
+    }
+    if (!csec) {
+      csec = localStorage.getItem('PREF_PLUGGY_CLIENT_SECRET') || profile.pluggyClientSecret || '';
+    }
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json'
+    };
+
+    if (cid && cid.trim()) headers['x-pluggy-client-id'] = cid.trim();
+    if (csec && csec.trim()) headers['x-pluggy-client-secret'] = csec.trim();
+
+    return headers;
+  };
+
+  const checkHasPluggyKeys = () => {
+    const headers = getPluggyHeaders();
+    return !!(headers['x-pluggy-client-id'] && headers['x-pluggy-client-secret']);
+  };
+  const hasPluggyKeys = isPluggyConfiguredOnServer || checkHasPluggyKeys();
+
+  const handleSaveCustomKeys = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pluggyClientId.trim()) {
+      toast.error('O Client ID é obrigatório.');
+      return;
+    }
+    if (!pluggyClientSecret.trim()) {
+      toast.error('O Client Secret é obrigatório.');
+      return;
+    }
+
+    setIsSavingCustomKeys(true);
+    try {
+      let actualSecret = pluggyClientSecret;
+      if (pluggyClientSecret === '••••••••••••••••') {
+        actualSecret = localStorage.getItem('PREF_PLUGGY_CLIENT_SECRET') || profile.pluggyClientSecret || '';
+      }
+
+      if (storageMethod === 'local') {
+        localStorage.setItem('PREF_PLUGGY_CLIENT_ID', pluggyClientId.trim());
+        localStorage.setItem('PREF_PLUGGY_CLIENT_SECRET', actualSecret.trim());
+        
+        await updateDoc(doc(db, 'users', user.uid), {
+          pluggyClientId: '',
+          pluggyClientSecret: '',
+          updatedAt: serverTimestamp()
+        });
+      } else {
+        await updateDoc(doc(db, 'users', user.uid), {
+          pluggyClientId: pluggyClientId.trim(),
+          pluggyClientSecret: actualSecret.trim(),
+          updatedAt: serverTimestamp()
+        });
+
+        localStorage.removeItem('PREF_PLUGGY_CLIENT_ID');
+        localStorage.removeItem('PREF_PLUGGY_CLIENT_SECRET');
+      }
+
+      toast.success('Segurança de Dados: Chaves configuradas com sucesso!');
+      await loadPluggyItems();
+    } catch (err) {
+      console.error(err);
+      toast.error('Erro ao salvar as credenciais da Pluggy.');
+    } finally {
+      setIsSavingCustomKeys(false);
+    }
+  };
+
+  const handleRemoveCustomKeys = async () => {
+    if (!window.confirm('Tem certeza que deseja apagar suas credenciais personalizadas da Pluggy?')) return;
+    
+    setIsSavingCustomKeys(true);
+    try {
+      localStorage.removeItem('PREF_PLUGGY_CLIENT_ID');
+      localStorage.removeItem('PREF_PLUGGY_CLIENT_SECRET');
+      
+      await updateDoc(doc(db, 'users', user.uid), {
+        pluggyClientId: '',
+        pluggyClientSecret: '',
+        updatedAt: serverTimestamp()
+      });
+
+      setPluggyClientId('');
+      setPluggyClientSecret('');
+      toast.success('Chaves de API removidas com sucesso do Perfil.');
+      setPluggyItems([]);
+    } catch (err) {
+      console.error(err);
+      toast.error('Falha ao remover chaves.');
+    } finally {
+      setIsSavingCustomKeys(false);
+    }
+  };
+
   const handleOpenPluggyConnect = async (reconnectItemId?: string) => {
     setIsLoadingConnect(true);
     try {
       const res = await fetch('/api/pluggy/connect_token', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getPluggyHeaders(),
         body: JSON.stringify({ clientUserId: user.uid, itemId: reconnectItemId })
       });
       const data = await safeJsonClient(res);
@@ -264,7 +373,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
               toast.loading('Validando conexão com a Pluggy...', { id: 'validate-new-item' });
               const valRes = await fetch('/api/pluggy/validate_item', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: getPluggyHeaders(),
                 body: JSON.stringify({ itemId })
               });
               const valData = await safeJsonClient(valRes);
@@ -310,8 +419,9 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const handleTestPluggyKeys = async () => {
-    if (!isPluggyConfiguredOnServer) {
-      toast.error('Configure as credenciais no .env do servidor para testar a conexão.');
+    const hasKeys = hasPluggyKeys;
+    if (!hasKeys) {
+      toast.error('Configure suas credenciais Client ID & Client Secret da Pluggy antes de testar.');
       return;
     }
     setIsTestingPluggy(true);
@@ -326,7 +436,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
     try {
       const res = await fetch('/api/pluggy/diagnose', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getPluggyHeaders(),
         body: JSON.stringify({
           itemIds: profile.pluggyItemIds || []
         })
@@ -355,15 +465,16 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const handleCreateSandbox = async () => {
-    if (!isPluggyConfiguredOnServer) {
-      toast.error('Por favor, certifique-se de que a Pluggy está configurada no servidor primeiro.');
+    const hasKeys = hasPluggyKeys;
+    if (!hasKeys) {
+      toast.error('Configure e salve as chaves da Pluggy antes de obter bancos de teste.');
       return;
     }
     setIsCreatingSandbox(true);
     try {
       const res = await fetch('/api/pluggy/create_sandbox', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getPluggyHeaders(),
         body: JSON.stringify({ bankConnectorId: 2 })
       });
       const data = await safeJsonClient(res);
@@ -393,8 +504,9 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const handleSyncPluggyTransactions = async () => {
-    if (!isPluggyConfiguredOnServer) {
-      toast.error('A integração da Pluggy não está configurada ou ativa no servidor.');
+    const hasKeys = hasPluggyKeys;
+    if (!hasKeys) {
+      toast.error('A integração da Pluggy não está configurada.');
       return;
     }
     setIsSyncingPluggy(true);
@@ -402,7 +514,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
     try {
       const res = await fetch('/api/pluggy/sync', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getPluggyHeaders(),
         body: JSON.stringify({
           categories: profile.categories || [],
           itemIds: profile.pluggyItemIds || []
@@ -519,12 +631,15 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const loadPluggyItems = async () => {
-    if (!isPluggyConfiguredOnServer) return;
+    const headers = getPluggyHeaders();
+    if (!hasPluggyKeys) {
+      return;
+    }
     setIsLoadingItems(true);
     try {
       const res = await fetch('/api/pluggy/list_items', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           itemIds: profile.pluggyItemIds || []
         })
@@ -549,7 +664,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
     try {
       const res = await fetch('/api/pluggy/delete_item', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getPluggyHeaders(),
         body: JSON.stringify({
           itemId
         })
@@ -575,12 +690,15 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const loadPluggyWebhooks = async () => {
-    if (!isPluggyConfiguredOnServer) return;
+    const headers = getPluggyHeaders();
+    if (!hasPluggyKeys) {
+      return;
+    }
     setIsLoadingWebhooks(true);
     try {
       const res = await fetch('/api/pluggy/list_webhooks', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({})
       });
       const data = await safeJsonClient(res);
@@ -598,8 +716,9 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
 
   const handleRegisterWebhook = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isPluggyConfiguredOnServer) {
-      toast.error('Configure as chaves Pluggy no servidor antes de criar webhooks.');
+    const hasKeys = hasPluggyKeys;
+    if (!hasKeys) {
+      toast.error('Configure as chaves Pluggy antes de criar webhooks.');
       return;
     }
     if (!webhookUrl.trim()) {
@@ -610,7 +729,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
     try {
       const res = await fetch('/api/pluggy/create_webhook', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getPluggyHeaders(),
         body: JSON.stringify({
           event: 'item/updated',
           url: webhookUrl.trim()
@@ -638,7 +757,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
     try {
       const res = await fetch('/api/pluggy/delete_webhook', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getPluggyHeaders(),
         body: JSON.stringify({
           webhookId
         })
@@ -693,7 +812,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
       toast.loading('Validando ID de Conexão com a Pluggy...', { id: 'validate-item' });
       const valRes = await fetch('/api/pluggy/validate_item', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getPluggyHeaders(),
         body: JSON.stringify({ itemId: rawId })
       });
       const valData = await safeJsonClient(valRes);
@@ -757,12 +876,12 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   }, []);
 
   React.useEffect(() => {
-    if (activePanel === 'pluggy' && isPluggyConfiguredOnServer) {
+    if (activePanel === 'pluggy' && hasPluggyKeys) {
       loadPluggyItems();
       loadPluggyWebhooks();
       loadCapturedEvents();
     }
-  }, [activePanel, isPluggyConfiguredOnServer, profile.pluggyItemIds]);
+  }, [activePanel, hasPluggyKeys, profile.pluggyItemIds]);
 
   return (
     <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -794,7 +913,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
       
       <div className={`flex-1 p-4 md:p-8 w-full sm:pb-8 flex flex-col ${isMobileMenu ? 'overflow-hidden pb-20' : 'overflow-y-auto pb-24'}`}>
         <div className="max-w-4xl mx-auto flex flex-col md:flex-row gap-0 md:gap-8 flex-1 w-full relative">
-          <aside className={`w-full md:w-64 flex-shrink-0 flex-col gap-2.5 md:gap-2 pb-2 md:pb-0 h-full ${isMobileMenu ? 'flex' : 'hidden md:flex'}`}>
+          <aside className={`w-full md:w-64 flex-shrink-0 flex-col gap-2.5 md:gap-2 pb-2 md:pb-0 h-full overflow-y-auto md:overflow-y-visible ${isMobileMenu ? 'flex' : 'hidden md:flex'}`}>
             <button 
               onClick={() => { setActivePanel('perfil'); setIsMobileMenu(false); }}
               className={`w-full text-left px-4 py-3.5 md:px-4 md:py-2.5 text-sm md:font-bold rounded-2xl md:rounded-lg transition-all flex items-center shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] md:shadow-none border border-slate-100 md:border-transparent ${activePanel === 'perfil' ? 'bg-emerald-50/50 md:bg-emerald-50 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 border-emerald-100/50' : 'bg-white md:bg-transparent text-slate-700 md:text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50'} active:scale-[0.98]`}>
@@ -1047,31 +1166,139 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                   </div>
                 </div>
 
-                {isPluggyConfiguredOnServer ? (
-                  <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 p-5 rounded-2xl space-y-4">
-                    <div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-400">
-                      <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
-                      <span className="font-bold text-[14px]">Credenciais Ativas Seguras no Servidor</span>
+                {/* --- SEÇÃO DE CREDENCIAIS DE DESENVOLVEDOR / USUÁRIO --- */}
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-850 p-5 rounded-2xl space-y-4 shadow-sm">
+                  <div className="flex items-center gap-2.5 text-slate-800 dark:text-slate-100">
+                    <div className="p-2 rounded-xl bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-400">
+                      <KeyRound className="w-5 h-5 text-emerald-500" />
                     </div>
-                    <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-                      O servidor do FINCANVAS está carregando suas credenciais da API Privada do Pluggy diretamente do arquivo seguro de variáveis de ambiente do ambiente de produção (<code>.env</code>). Não é necessário fornecer credenciais manuais pelo navegador.
+                    <div>
+                      <h3 className="font-bold text-[14px]">Suas Credenciais da API do Pluggy</h3>
+                      <p className="text-[11px] text-slate-400 font-mono">
+                        {hasPluggyKeys ? (
+                          <span className="text-emerald-500 font-bold">● Usando credenciais personalizadas configuradas e ativas</span>
+                        ) : (
+                          <span className="text-amber-500 font-bold">▲ Aguardando configuração de credenciais</span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed font-sans">
+                    Para conectar suas contas de bancos reais sem limitações ou para usar em ambientes personalizados, insira seu **Client ID** e **Client Secret** obtidos gratuitamente no console da <a href="https://developer.pluggy.ai" target="_blank" rel="noopener noreferrer" className="text-emerald-600 dark:text-emerald-400 underline font-semibold hover:text-emerald-700">Pluggy (developer.pluggy.ai)</a>.
+                  </p>
+
+                  <form onSubmit={handleSaveCustomKeys} className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Client ID *</label>
+                        <input
+                          type="text"
+                          value={pluggyClientId}
+                          onChange={(e) => setPluggyClientId(e.target.value)}
+                          placeholder="Cole seu Client ID da Pluggy"
+                          className="w-full bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Client Secret *</label>
+                        <div className="relative">
+                          <input
+                            type={showClientSecret ? 'text' : 'password'}
+                            value={pluggyClientSecret}
+                            onChange={(e) => setPluggyClientSecret(e.target.value)}
+                            placeholder={pluggyClientSecret ? '••••••••••••••••' : 'Cole seu Client Secret da Pluggy'}
+                            className="w-full bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-xl pl-4 pr-10 py-2.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowClientSecret(!showClientSecret)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-250 cursor-pointer"
+                          >
+                            {showClientSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-50 dark:bg-slate-950/60 p-4 rounded-xl border border-slate-150 dark:border-slate-850 space-y-2">
+                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">Método de Armazenamento Seguro:</span>
+                      <div className="flex flex-col sm:flex-row gap-4 mt-1">
+                        <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="storageMethod"
+                            checked={storageMethod === 'cloud'}
+                            onChange={() => setStorageMethod('cloud')}
+                            className="text-emerald-600 focus:ring-emerald-500"
+                          />
+                          <span><strong>Salvar na Nuvem (Seguro no Firestore):</strong> Chaves associadas ao seu login e processadas no servidor</span>
+                        </label>
+                        <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="storageMethod"
+                            checked={storageMethod === 'local'}
+                            onChange={() => setStorageMethod('local')}
+                            className="text-emerald-600 focus:ring-emerald-500"
+                          />
+                          <span><strong>Apenas Local (LocalStorage):</strong> Salva em seu navegador (não gravado no banco de dados)</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <button
+                        type="submit"
+                        disabled={isSavingCustomKeys}
+                        className="py-2.5 px-4 bg-slate-850 hover:bg-slate-900 dark:bg-slate-700 dark:hover:bg-slate-600 text-white font-bold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                      >
+                        {isSavingCustomKeys ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4 text-emerald-400" />}
+                        <span>Salvar Credenciais Pluggy</span>
+                      </button>
+
+                      {(profile.pluggyClientId || localStorage.getItem('PREF_PLUGGY_CLIENT_ID')) && (
+                        <button
+                          type="button"
+                          onClick={handleRemoveCustomKeys}
+                          disabled={isSavingCustomKeys}
+                          className="py-2.5 px-4 bg-rose-50 dark:bg-rose-950/20 hover:bg-rose-100 group text-rose-600 font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4 text-rose-500" />
+                          <span>Remover Credenciais</span>
+                        </button>
+                      )}
+                    </div>
+                  </form>
+                </div>
+
+                {/* --- CONEXÃO DA API E CONTROLES (SE CREDENCIAIS OK) --- */}
+                {hasPluggyKeys ? (
+                  <div className="bg-emerald-50/50 dark:bg-emerald-950/10 border border-emerald-200/50 dark:border-emerald-800/30 p-5 rounded-2xl space-y-4">
+                    <div className="flex items-center gap-2 text-emerald-850 dark:text-emerald-400">
+                      <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
+                      <span className="font-bold text-[14px]">Credenciais Ativas Configuradas</span>
+                    </div>
+                    <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed font-sans">
+                      Sua conta está conectada à API Privada do Pluggy. Você pode sincronizar novas despesas ou adicionar conexões bancárias via widget oficial abaixo.
                     </p>
 
                     {/* Status das credenciais do servidor e conexões */}
                     <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4 font-sans">
                       <div className="text-[12px] font-bold text-slate-400 uppercase tracking-wider mb-2">Painel de Diagnóstico da Conexão:</div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs leading-relaxed font-mono">
-                        {/* Estado 1: Credenciais no servidor */}
+                        {/* Estado 1: Armazenamento das chaves */}
                         <div className="flex items-center gap-2 bg-slate-950 p-2.5 rounded-xl border border-slate-800">
                           <div className="w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
-                          <span className="text-slate-300">Credenciais do Servidor:</span>
-                          <span className="text-emerald-400 font-bold ml-auto">Configuradas</span>
+                          <span className="text-slate-300">Armazenamento:</span>
+                          <span className="text-emerald-400 font-bold ml-auto">{storageMethod === 'cloud' ? 'Nuvem (NoSQL)' : 'Apenas Local'}</span>
                         </div>
 
                         {/* Estado 2: Autenticação via Diagnóstico */}
                         <div className="flex items-center gap-2 bg-slate-950 p-2.5 rounded-xl border border-slate-800">
                           <div className="w-2.5 h-2.5 rounded-full bg-emerald-500"></div>
-                          <span className="text-slate-300">Autenticação com a API:</span>
+                          <span className="text-slate-300">Handshake Seguro:</span>
                           <span className="text-emerald-400 font-bold ml-auto">Autenticação OK</span>
                         </div>
 
@@ -1089,13 +1316,13 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                           {pluggyItems.some(i => ["OUTDATED", "LOGIN_ERROR", "NEEDS_RECONNECT"].includes(i.status)) ? (
                             <>
                               <div className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></div>
-                              <span className="text-slate-300">Sincronização & Saúde:</span>
-                              <span className="text-rose-455 font-bold ml-auto">Precisa Reconectar</span>
+                              <span className="text-slate-350">Sincronização & Saúde:</span>
+                              <span className="text-rose-400 font-bold ml-auto">Reconectar</span>
                             </>
                           ) : (
                             <>
                               <div className={`w-2.5 h-2.5 rounded-full ${pluggyItems.length > 0 ? 'bg-emerald-500' : 'bg-slate-500'}`}></div>
-                              <span className="text-slate-300">Sincronização & Saúde:</span>
+                              <span className="text-slate-350">Sincronização & Saúde:</span>
                               <span className={`font-bold ml-auto ${pluggyItems.length > 0 ? 'text-emerald-400' : 'text-slate-500'}`}>
                                 {pluggyItems.length > 0 ? 'Sincronizado' : 'Nenhuma'}
                               </span>
@@ -1136,30 +1363,16 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     </div>
                   </div>
                 ) : (
-                  <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 p-5 rounded-2xl space-y-4 shadow-sm">
+                  <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-805 p-5 rounded-2xl space-y-4 shadow-sm text-slate-800 dark:text-slate-100">
                     <div className="flex items-center gap-2 text-amber-800 dark:text-amber-400">
                       <span className="inline-block w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse"></span>
-                      <span className="font-bold text-[14px]">Credenciais da Pluggy não Detectadas</span>
+                      <span className="font-bold text-[14px]">Credenciais da API não Encontradas</span>
                     </div>
-                    <p className="text-xs text-slate-650 dark:text-slate-400 leading-relaxed font-mono bg-slate-950 text-slate-350 p-2 rounded-xl">
-                      Status da conexão: <strong className="text-rose-450">Credenciais ausentes de backend (.env).</strong>
+                    <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed font-sans">
+                      Para ativar a automatização de contas com a inteligência artificial do Gemini, configure suas chaves do desenvolvedor Pluggy acima. Elas são gravadas de forma totalmente cifrada e privada.
                     </p>
-                    <p className="text-xs text-slate-605 dark:text-slate-400 leading-relaxed font-sans">
-                      Para sua segurança e privacidade, chaves privadas da Pluggy (<strong>Client ID</strong> e <strong>Client Secret</strong>) são tratadas estritamente no backend e nunca expostas ao navegador ou armazenadas no banco de dados do usuário.
-                    </p>
-                    <div className="text-xs bg-slate-900 border border-slate-800 text-slate-100 p-4 rounded-xl space-y-2.5 font-mono leading-relaxed">
-                      <div className="text-amber-400 font-bold uppercase text-[10px] tracking-wide">Como Habilitar a Integração:</div>
-                      <div>1. Abra o arquivo <code className="text-emerald-400">.env</code> na raiz do projeto.</div>
-                      <div>2. Adicione as chaves obtidas no console da Pluggy:</div>
-                      <pre className="text-slate-300 text-[11px] bg-slate-950 p-2.5 rounded border border-slate-800">
-PLUGGY_CLIENT_ID=seu_client_id_aqui{"\n"}
-PLUGGY_CLIENT_SECRET=seu_client_secret_aqui
-                      </pre>
-                      <div>3. O servidor carregará e validará automaticamente a conexão.</div>
-                    </div>
                   </div>
                 )}
-
 
 
                 {/* --- CADASTRO MANUAL DE ITEM IDS (Free/Personal/Demo/Meu Pluggy) --- */}
@@ -1286,7 +1499,7 @@ PLUGGY_CLIENT_SECRET=seu_client_secret_aqui
                     <button
                       type="button"
                       onClick={loadPluggyItems}
-                      disabled={isLoadingItems || !isPluggyConfiguredOnServer}
+                      disabled={isLoadingItems || !hasPluggyKeys}
                       className="text-xs font-bold text-emerald-600 hover:text-emerald-700 flex items-center gap-1 disabled:opacity-50"
                       title="Clique para recarregar as contas conectadas do Pluggy"
                     >
@@ -1295,9 +1508,9 @@ PLUGGY_CLIENT_SECRET=seu_client_secret_aqui
                     </button>
                   </div>
 
-                  {!isPluggyConfiguredOnServer ? (
+                  {!hasPluggyKeys ? (
                     <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-150 dark:border-slate-800 text-center text-xs text-slate-500">
-                      Configure as credenciais (Client ID e Secret) no .env para visualizar suas conexões ativas.
+                      Configure as credenciais (Client ID e Client Secret) acima para determinar suas conexões de contas ativas.
                     </div>
                   ) : isLoadingItems ? (
                     <div className="flex items-center justify-center py-6 text-slate-400 text-xs">
@@ -1385,7 +1598,7 @@ PLUGGY_CLIENT_SECRET=seu_client_secret_aqui
                     <button
                       type="button"
                       onClick={handleSyncPluggyTransactions}
-                      disabled={isSyncingPluggy || !isPluggyConfiguredOnServer}
+                      disabled={isSyncingPluggy || !hasPluggyKeys}
                       className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-2xl shadow-md shadow-emerald-600/10 hover:shadow-emerald-600/20 transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98]"
                     >
                       {isSyncingPluggy ? (
@@ -1463,7 +1676,7 @@ PLUGGY_CLIENT_SECRET=seu_client_secret_aqui
 
                     <button
                       type="submit"
-                      disabled={isRegisteringWebhook || !isPluggyConfiguredOnServer}
+                      disabled={isRegisteringWebhook || !hasPluggyKeys}
                       className="w-full sm:w-auto px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-45 disabled:cursor-not-allowed active:scale-[0.98]"
                     >
                       {isRegisteringWebhook ? (
@@ -1487,7 +1700,7 @@ PLUGGY_CLIENT_SECRET=seu_client_secret_aqui
                       <button
                         type="button"
                         onClick={loadPluggyWebhooks}
-                        disabled={isLoadingWebhooks || !isPluggyConfiguredOnServer}
+                        disabled={isLoadingWebhooks || !hasPluggyKeys}
                         className="text-[11px] font-bold text-indigo-600 hover:indigo-700 flex items-center gap-1 disabled:opacity-50"
                       >
                         {isLoadingWebhooks ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
@@ -1495,9 +1708,9 @@ PLUGGY_CLIENT_SECRET=seu_client_secret_aqui
                       </button>
                     </div>
 
-                    {!isPluggyConfiguredOnServer ? (
+                    {!hasPluggyKeys ? (
                       <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 text-center text-[11px] text-slate-500">
-                        Configure as chaves API no .env para obter a relação de canais ativos.
+                        Configure as chaves e credenciais da Pluggy acima para obter a relação de canais ativos.
                       </div>
                     ) : isLoadingWebhooks ? (
                       <div className="text-center py-4 text-xs text-slate-400 flex items-center justify-center gap-2">

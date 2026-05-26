@@ -334,11 +334,20 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
 
   // Helper to retrieve and validate Pluggy credentials securely in backend
-  const getPluggyCredentialsOrThrow = () => {
-    const clientId = process.env.PLUGGY_CLIENT_ID?.trim();
-    const clientSecret = process.env.PLUGGY_CLIENT_SECRET?.trim();
+  const getPluggyCredentialsOrThrow = (req?: express.Request) => {
+    let clientId = req?.headers["x-pluggy-client-id"] as string;
+    let clientSecret = req?.headers["x-pluggy-client-secret"] as string;
+
+    if (!clientId && req?.body) {
+      clientId = req.body.pluggyClientId || req.body.clientId;
+      clientSecret = req.body.pluggyClientSecret || req.body.clientSecret;
+    }
+
+    clientId = clientId?.trim();
+    clientSecret = clientSecret?.trim();
+
     if (!clientId || !clientSecret) {
-      const error = new Error("Credenciais da Pluggy ausentes no servidor. Configure PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET no painel de Secrets ou no arquivo .env.");
+      const error = new Error("Credenciais da Pluggy ausentes no servidor. Configure as suas credenciais Client ID e Client Secret na seção de preferências para começar.");
       (error as any).code = "PLUGGY_CREDENTIALS_MISSING";
       throw error;
     }
@@ -350,7 +359,7 @@ async function startServer() {
   // 0. Check secure credentials status
   app.get("/api/pluggy/credentials_status", (req, res) => {
     try {
-      getPluggyCredentialsOrThrow();
+      getPluggyCredentialsOrThrow(req);
       res.json({ configured: true });
     } catch {
       res.json({ configured: false });
@@ -360,7 +369,7 @@ async function startServer() {
   // 1. Testar Credenciais da API Privada do Pluggy
   app.post("/api/pluggy/test", async (req, res) => {
     try {
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
       await PluggyService.authenticate(clientId, clientSecret);
       res.json({ success: true, message: "Par de chaves do Pluggy validado com sucesso!" });
     } catch (err: any) {
@@ -372,7 +381,7 @@ async function startServer() {
   // 1.1 Listar conexões (items) ativas do Pluggy
   app.post("/api/pluggy/list_items", async (req, res) => {
     try {
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
       const { itemIds } = req.body;
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       
@@ -424,7 +433,7 @@ async function startServer() {
       return res.status(400).json({ error: "Item ID é um parâmetro obrigatório de exclusão." });
     }
     try {
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       await PluggyService.deleteItem(apiKey, itemId);
       res.json({ success: true, message: "Conexão deletada com sucesso!" });
@@ -447,7 +456,7 @@ async function startServer() {
         });
       }
 
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       const item = await PluggyService.getItem(apiKey, itemId);
 
@@ -492,7 +501,7 @@ async function startServer() {
   app.post("/api/pluggy/connect_token", async (req, res) => {
     try {
       const { clientUserId, itemId } = req.body;
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       const data = await PluggyService.createConnectToken(apiKey, clientUserId, itemId);
       res.json({ success: true, connectToken: data.accessToken || data.token || data.connectToken });
@@ -520,7 +529,7 @@ async function startServer() {
       steps[0].status = "RUNNING";
       logs.push("[Passo 1] Analisando existência e preenchimento das credenciais do servidor...");
       
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
       const cleanId = clientId.trim().replace(/[\r\n\t\s]/g, "");
       const cleanSecret = clientSecret.trim().replace(/[\r\n\t\s]/g, "");
 
@@ -648,7 +657,7 @@ async function startServer() {
   app.post("/api/pluggy/create_sandbox", async (req, res) => {
     const { bankConnectorId } = req.body;
     try {
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       const itemData = await PluggyService.createSandbox(apiKey, bankConnectorId || 2);
       res.json({ success: true, item: itemData });
@@ -665,7 +674,7 @@ async function startServer() {
       return res.status(400).json({ error: "É necessário fornecer um URL para o webhook." });
     }
     try {
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       const webhook = await PluggyService.createWebhook(apiKey, event || "item/updated", url);
       res.json({ success: true, webhook });
@@ -678,7 +687,7 @@ async function startServer() {
   // 2.2 Listar Webhooks cadastrados no Pluggy
   app.post("/api/pluggy/list_webhooks", async (req, res) => {
     try {
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       const webhooks = await PluggyService.listWebhooks(apiKey);
       res.json({ success: true, webhooks });
@@ -695,7 +704,7 @@ async function startServer() {
       return res.status(400).json({ error: "O ID do webhook é obrigatório para exclusão." });
     }
     try {
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       await PluggyService.deleteWebhook(apiKey, webhookId);
       res.json({ success: true, message: "Webhook excluído com sucesso do Pluggy!" });
@@ -749,7 +758,7 @@ async function startServer() {
     ];
 
     try {
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow();
+      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       
       let items: any[] = [];
