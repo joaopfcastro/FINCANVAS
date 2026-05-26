@@ -1,0 +1,50 @@
+{
+  "entities": {
+    "Transaction": {
+      "title": "Transaction",
+      "description": "A financial transaction",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string" },
+        "desc": { "type": "string" },
+        "cat": { "type": "string" },
+        "type": { "type": "string", "enum": ["Receita", "Despesa"] },
+        "amount": { "type": "number" },
+        "source": { "type": "string" },
+        "userId": { "type": "string" },
+        "pluggyId": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["date", "desc", "cat", "type", "amount", "source", "userId", "createdAt", "updatedAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile settings",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "highSpendingAlerts": { "type": "boolean" },
+        "categories": { "type": "array", "items": { "type": "string" } },
+        "darkMode": { "type": "boolean" },
+        "phone": { "type": "string" },
+        "pluggyClientId": { "type": "string" },
+        "pluggyClientSecret": { "type": "string" },
+        "pluggyItemIds": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["userId", "highSpendingAlerts", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/transactions/{transactionId}": {
+      "schema": { "$ref": "#/entities/Transaction" },
+      "description": "Transactions collection"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profiles collection"
+    }
+  }
+}

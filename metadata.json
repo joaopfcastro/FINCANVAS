@@ -1,0 +1,8 @@
+{
+  "name": "FinCanvas",
+  "description": "Gerenciador financeiro pessoal com relatórios inteligentes, mentoria via IA e importação automática bancária por API do Pluggy.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
