@@ -64,6 +64,7 @@ export interface Transaction {
   directionReason?: string;
   isLikelyInternalTransfer?: boolean;
   shouldIgnoreInTotals?: boolean;
+  needsReview?: boolean;
 }
 
 export interface AccountBalance {

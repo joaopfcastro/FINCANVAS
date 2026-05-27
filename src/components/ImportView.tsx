@@ -5,6 +5,7 @@ import { db, handleFirestoreError, OperationType } from '../firebase';
 import { Transaction, UserProfile } from '../App';
 import { secureGenerateContent, Type } from '../lib/gemini';
 import { toast } from 'sonner';
+import { localRecognize } from '../lib/transactionRecognizer';
 
 function normalizeText(text: string): string {
   if (!text) return '';
@@ -23,6 +24,82 @@ function makeKey(date: string, desc: string, amount: number, source: string, typ
   const normType = (type || '').trim().toLowerCase();
   
   return `${normDate}|${normDesc}|${formattedAmount}|${normSource}|${normType}`;
+}
+
+function parseOFX(text: string): any[] {
+  const transactions: any[] = [];
+  const stmttrns = text.match(/<STMTTRN>([\s\S]*?)<\/STMTTRN>/gi) || [];
+  
+  for (const block of stmttrns) {
+    const typeMatch = block.match(/<TRNTYPE>(.*)/i);
+    const dateMatch = block.match(/<DTPOSTED>(\d{8})/i);
+    const amountMatch = block.match(/<TRNAMT>([\d.-]+)/i);
+    const memoMatch = block.match(/<MEMO>([^<]+)/i) || block.match(/<NAME>([^<]+)/i);
+    
+    if (amountMatch && (memoMatch || dateMatch)) {
+      const rawAmt = parseFloat(amountMatch[1]);
+      const dateRaw = dateMatch ? dateMatch[1] : ''; // YYYYMMDD
+      let dateFormatted = '';
+      if (dateRaw.length >= 8) {
+        dateFormatted = `${dateRaw.substring(6, 8)}/${dateRaw.substring(4, 6)}/${dateRaw.substring(0, 4)}`;
+      } else {
+        const d = new Date();
+        dateFormatted = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+      }
+      
+      const desc = memoMatch ? memoMatch[1].trim() : 'Transação Sem Nome';
+      const isDespesa = rawAmt < 0;
+      
+      transactions.push({
+        date: dateFormatted,
+        desc: desc,
+        amount: rawAmt,
+        type: isDespesa ? 'Despesa' : 'Receita',
+        source: 'Importação OFX'
+      });
+    }
+  }
+  return transactions;
+}
+
+function parseCSV(text: string): any[] {
+  const transactions: any[] = [];
+  const lines = text.split(/\r?\n/);
+  if (lines.length <= 1) return [];
+  
+  // Try to guess delimiter: , or ;
+  const firstLine = lines[0];
+  const delimiter = firstLine.includes(';') ? ';' : ',';
+  
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    
+    const cols = line.split(delimiter).map(c => c.replace(/^["']|["']$/g, '').trim());
+    if (cols.length < 2) continue;
+    
+    const datePattern = /(\d{2})\/(\d{2})\/(\d{4})/;
+    const foundDateIdx = cols.findIndex(col => datePattern.test(col));
+    
+    const amtPattern = /^-?\d+([.,]\d{2})?$/;
+    const foundAmtIdx = cols.findIndex(col => amtPattern.test(col.replace(',', '.')));
+    
+    if (foundDateIdx !== -1 && foundAmtIdx !== -1) {
+      const date = cols[foundDateIdx];
+      const desc = cols[foundDateIdx + 1] || cols[0] || 'Transação';
+      const cleanAmtStr = cols[foundAmtIdx].replace(/\./g, '').replace(',', '.');
+      const amount = parseFloat(cleanAmtStr) || 0;
+      
+      transactions.push({
+        date: date,
+        desc: desc,
+        amount: amount,
+        type: amount < 0 ? 'Despesa' : 'Receita',
+        source: 'Importação CSV'
+      });
+    }
+  }
+  return transactions;
 }
 
 interface ImportViewProps {
@@ -82,57 +159,98 @@ export const ImportView = React.memo(function ImportView({ userId, onNavigateDas
         'Compras Online', 'Assinaturas', 'Outros'
       ];
 
-      const parts = await Promise.all(files.map(fileToPart));
-      const prompt = `Você é um assistente financeiro de elite, especializado em análise de extratos bancários brasileiros.
-Extraia detalhadamente todas as transações financeiras dos documentos ou imagens em anexo.
+      // Separate files into local-parseable vs AI-requiring
+      const localTransactions: any[] = [];
+      const aiFiles: File[] = [];
 
-REGRAS DE CATEGORIZAÇÃO CRÍTICAS:
-1. Alinhe as categorias de forma inteligente com a lista cadastrada do usuário se possível: ${JSON.stringify(userCategories)}.
-2. Se nenhuma das categorias cadastradas se adequar perfeitamente para um item específico, crie uma categoria intuitiva e elegante iniciando em letra maiúscula (ex: "Pets", "Imposto", "Serviços").
-3. Se a descrição contiver "Marketplace", "Mercado Livre", "Amazon", "Shopee", "Magalu", "AliExpress" ou similares, categorize preferencialmente como "Compras Online".
-4. Analise o contexto: "PIX Marketplace" é "Compras Online", não "Pagamentos Diversos" ou "Outros".
-5. Evite ao máximo a categoria "Outros" ou "Pagamentos Diversos".
-
-REGRAS DE DESCRIÇÃO:
-- Limpe a descrição: remova códigos bancários redundantes (ex: "PIX QR CODE ESTATICO", "TARIFA BANCARIA COMPRA", "DOC/TED COMPRA NO CARTAO").
-- Mantenha o nome do estabelecimento de forma clara, amigável e limpa (Ex: "IFD*RESTAURANTE SAO J" -> "iFood (Restaurante)", "POSTO IPIRANGA JACAREI" -> "Posto Ipiranga", "UBER *TRIP HELP_CENTER" -> "Uber").
-
-Retorne APENAS um array JSON de objetos, com nenhuma outra explicação.
-O valor 'amount' DEVE ser um número (negativo para despesas, positivo para receitas).
-Use datas no formato DD/MM/YYYY.`;
-
-      const response = await secureGenerateContent({
-        model: 'gemini-3.1-pro-preview',
-        contents: {
-          parts: [...parts, { text: prompt }],
-        },
-        config: {
-           responseMimeType: "application/json",
-           responseSchema: {
-             type: Type.ARRAY,
-             items: {
-               type: Type.OBJECT,
-               properties: {
-                 date: { type: Type.STRING, description: "Date in DD/MM/YYYY" },
-                 desc: { type: Type.STRING, description: "Transaction description" },
-                 cat: { type: Type.STRING, description: "Category (e.g. Alimentação, Transporte, Salário)" },
-                 type: { type: Type.STRING, description: "Either 'Receita' or 'Despesa'" },
-                 amount: { type: Type.NUMBER, description: "Value of transaction (numeric)" },
-                 source: { type: Type.STRING, description: "Source of transaction, e.g. Banco X, Cartão de Crédito" }
-               },
-               required: ["date", "desc", "cat", "type", "amount", "source"]
-             }
-           }
+      for (const file of files) {
+        const nameLower = file.name.toLowerCase();
+        if (nameLower.endsWith('.ofx') || nameLower.endsWith('.xml')) {
+          const text = await file.text();
+          const parsed = parseOFX(text);
+          localTransactions.push(...parsed);
+        } else if (nameLower.endsWith('.csv')) {
+          const text = await file.text();
+          const parsed = parseCSV(text);
+          localTransactions.push(...parsed);
+        } else {
+          aiFiles.push(file);
         }
-      });
-
-      const text = response.text || "[]";
-      let generatedTransactions: any[] = [];
-      try {
-        generatedTransactions = JSON.parse(text);
-      } catch (e) {
-        console.error("Failed to parse AI output:", text);
       }
+
+      let aiTransactions: any[] = [];
+
+      if (aiFiles.length > 0) {
+        const parts = await Promise.all(aiFiles.map(fileToPart));
+        const prompt = `Você é um assistente financeiro de elite, especializado em extração de extratos bancários brasileiros a partir de documentos ou imagens.
+Extraia detalhadamente todas as transações financeiras dos documentos ou imagens em anexo (PDF ou imagem). 
+
+Siga estritamente estas diretrizes de extração:
+1. Extraia a data no formato DD/MM/YYYY.
+2. Extraia o valor numérico bruto (negativo para despesas, positivo para receitas).
+3. Extraia a descrição literal do estabelecimento ou pagamento sem encurtar.
+4. Identifique o banco emissor ou origem (ex: Itaú, Bradesco, Recibo).
+
+Não faça classificação de categorias. Retorne o campo 'cat' vazio.
+
+Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, sem explicações textuais fora do JSON.`;
+
+        const response = await secureGenerateContent({
+          model: 'gemini-3.5-flash',
+          contents: {
+            parts: [...parts, { text: prompt }],
+          },
+          config: {
+             responseMimeType: "application/json",
+             responseSchema: {
+               type: Type.ARRAY,
+               items: {
+                 type: Type.OBJECT,
+                 properties: {
+                   date: { type: Type.STRING, description: "Date in DD/MM/YYYY" },
+                   desc: { type: Type.STRING, description: "Transaction description" },
+                   cat: { type: Type.STRING, description: "Category (leave empty)" },
+                   type: { type: Type.STRING, description: "Either 'Receita' or 'Despesa'" },
+                   amount: { type: Type.NUMBER, description: "Value of transaction (numeric)" },
+                   source: { type: Type.STRING, description: "Source of transaction, e.g. Bradesco" }
+                 },
+                 required: ["date", "desc", "type", "amount", "source"]
+               }
+             }
+          }
+        });
+
+        const text = response.text || "[]";
+        try {
+          aiTransactions = JSON.parse(text);
+        } catch (e) {
+          console.error("Failed to parse AI output:", text);
+        }
+      }
+
+      // Combine both local parsed lines and AI extracted receipts
+      const rawExtractedList = [...localTransactions, ...aiTransactions];
+
+      // Run ALL extracted entries through local validation funnel
+      const generatedTransactions = rawExtractedList.map(item => {
+        const localRec = localRecognize({
+          description: item.desc,
+          amount: item.amount,
+          detectedDirection: item.type as 'Receita' | 'Despesa',
+        }, [], userCategories);
+
+        return {
+          date: item.date,
+          desc: localRec.cleanDescription || item.desc,
+          cat: localRec.category || 'Outros',
+          type: localRec.type || item.type,
+          amount: item.amount,
+          source: item.source || 'Importação',
+          directionConfidence: localRec.confidence,
+          directionReason: localRec.evidence,
+          needsReview: localRec.needsReview
+        };
+      });
       
       const colRef = collection(db, 'transactions');
       const newCategories = new Set<string>();

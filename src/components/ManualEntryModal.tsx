@@ -20,6 +20,7 @@ import { db, auth } from '../firebase';
 import { Transaction, UserProfile } from '../App';
 import { secureGenerateContent, Type } from '../lib/gemini';
 import { toast } from 'sonner';
+import { localRecognize } from '../lib/transactionRecognizer';
 
 interface ManualEntryModalProps {
   isOpen: boolean;
@@ -180,6 +181,26 @@ Regras de classificação:
         'Compras Online', 'Assinaturas', 'Outros'
       ];
 
+      // 1. Run local recognition first
+      const parsedAmount = parseFloat(manualForm.amount.replace(',', '.')) || -0.01;
+      const localResult = localRecognize({
+        description: manualForm.desc,
+        amount: parsedAmount,
+        detectedDirection: manualType,
+      }, [], userCategories);
+
+      if (localResult && localResult.confidence >= 0.75) {
+        setManualForm(prev => ({
+          ...prev,
+          cat: localResult.category,
+          desc: localResult.cleanDescription || prev.desc
+        }));
+        toast.success('Categoria e descrição sugeridas localmente!');
+        setIsSuggesting(false);
+        return;
+      }
+
+      // 2. Fallback to Gemini if low confidence
       const prompt = `Analise a descrição desta transação financeira e classifique-a de forma inteligente.
 Descrição: "${manualForm.desc}" (${manualType === 'Receita' ? 'Receita/Entrada' : 'Despesa/Saída'})
 

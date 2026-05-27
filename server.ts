@@ -10,6 +10,9 @@ import {
   cleanDescriptionLocally 
 } from "./src/lib/pluggyNormalizer";
 import { localRecognize, RawTransactionInput, LearnedRule } from "./src/lib/transactionRecognizer";
+import { runLocalRecognition } from "./src/lib/recognition/engine/recognitionEngine";
+import { AUTO_ACCEPT, ACCEPT_WITH_BADGE, REVIEW_OR_AI } from "./src/lib/recognition/constants";
+import { RawTransactionInput as NewRawInput, UserRecognitionRule } from "./src/lib/recognition/types";
 
 dotenv.config();
 
@@ -834,11 +837,35 @@ async function startServer() {
         });
       }
 
-      // 1. Process EVERY transaction using local recognition engine
+      // 1. Process EVERY transaction using modern local recognition engine
       const userLearnedRules: LearnedRule[] = req.body.learnedRules || [];
-      
+      const userHistoryInput = req.body.userHistory || req.body.history || [];
+
+      // Translate learned rules to the new format
+      const transformedRules: UserRecognitionRule[] = userLearnedRules.map((lr, idx) => ({
+        id: lr.id || `learnt-${lr.merchantKey}-${idx}`,
+        userId: lr.userId,
+        name: `Aprendizado: ${lr.merchantKey}`,
+        enabled: true,
+        priority: 1000 + idx,
+        scope: 'all',
+        conditions: [
+          { field: 'merchantKey', operator: 'equals', value: lr.merchantKey }
+        ],
+        actions: [
+          { type: 'setCategory', value: lr.category },
+          { type: 'setDescription', value: lr.cleanDescription },
+          { type: 'setType', value: lr.type }
+        ],
+        stopProcessing: true,
+        createdAt: lr.createdAt,
+        updatedAt: lr.updatedAt,
+        usageCount: 0
+      }));
+
+      // Map raw inputs and run recognition
       const localResults = rawTransactionsBatch.map(tx => {
-        const rawInput: RawTransactionInput = {
+        const rawInput: NewRawInput = {
           description: tx.desc,
           amount: tx.amount,
           operationType: tx.operationType,
@@ -848,7 +875,7 @@ async function startServer() {
           detectedDirection: tx.detectedDirection,
           pluggyId: tx.pluggyId
         };
-        const recognized = localRecognize(rawInput, userLearnedRules, userCategories);
+        const recognized = runLocalRecognition(rawInput, transformedRules, userHistoryInput, userCategories);
         return {
           tx,
           recognized
@@ -856,18 +883,19 @@ async function startServer() {
       });
 
       // Split into high confidence (local) and low confidence (needing AI)
-      const highConfidenceList = localResults.filter(r => r.recognized.confidence >= 0.80);
-      const lowConfidenceList = localResults.filter(r => r.recognized.confidence < 0.80);
+      // Confidences lower than REVIEW_OR_AI (0.60) will trigger AI fallback
+      const highConfidenceList = localResults.filter(r => r.recognized.confidence >= REVIEW_OR_AI);
+      const lowConfidenceList = localResults.filter(r => r.recognized.confidence < REVIEW_OR_AI);
 
-      console.log(`[Pluggy Sync Local Engine] Reconhecimento local concluído:`);
-      console.log(`  - Alta confiança (Processados localmente): ${highConfidenceList.length}`);
-      console.log(`  - Baixa confiança (Gargalo para IA): ${lowConfidenceList.length}`);
+      console.log(`[Pluggy Sync Local Engine V2] Local recognition completed:`);
+      console.log(`  - High Confidence (>= ${REVIEW_OR_AI}): ${highConfidenceList.length}`);
+      console.log(`  - Low Confidence (< ${REVIEW_OR_AI}) [Triggers AI Fallback]: ${lowConfidenceList.length}`);
 
       let geminiMapped: Record<string, { cat: string; desc: string }> = {};
 
       const ai = getAiClient();
       if (lowConfidenceList.length > 0 && ai) {
-        console.log(`[Pluggy Sync AI Fallback] Enviando ${lowConfidenceList.length} transações com baixa confiança local para refinamento inteligente no Gemini...`);
+        console.log(`[Pluggy Sync AI Fallback] Sending ${lowConfidenceList.length} transactions to Gemini fallback process...`);
         const promptSystem = `Você é um excelente assistente financeiro de elite brasileiro. Algumas transações com baixa confiança local precisam de classificação e pós-processamento. Mapeie-as para estas categorias válidas: ${JSON.stringify(userCategories)}.
 Você NÃO PODE alterar o tipo da transação ou direção financeira. A direção financeira já foi calculada heuristicamente e está correta em 'detectedDirection' ('Receita' ou 'Despesa').
 
@@ -912,11 +940,21 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
               desc: item.desc
             };
           }
-          console.log(`[Pluggy Sync AI Fallback] Gemini categorizou ${parsedGemini.length} transações com sucesso.`);
+          console.log(`[Pluggy Sync AI Fallback] Gemini successfully categorized ${parsedGemini.length} transactions.`);
         } catch (aiError: any) {
-          console.error("[Pluggy Sync AI Fallback Error]: Falha ao chamar Gemini. Utilizando fallback heurístico local.", aiError?.message || aiError);
+          console.error("[Pluggy Sync AI Fallback Error]: AI request failed. Reverting to local heuristic fallback.", aiError?.message || aiError);
         }
       }
+
+      // Compute precise statistics
+      let userRulesCount = 0;
+      let descriptionMatchCount = 0;
+      let localAutoCount = 0;
+      let localProbableCount = 0;
+      let aiFallbackCount = 0;
+      let needsReviewCount = 0;
+      let internalTransfersCount = 0;
+      let ignoredInTotalsCount = 0;
 
       // Build the final compiled list
       const categorizedList = localResults.map(r => {
@@ -940,6 +978,45 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         const finalCat = aiMatch?.cat || localRec.category;
         const finalDesc = aiMatch?.desc || localRec.cleanDescription;
 
+        // Statistics accounting
+        if (localRec.isLikelyInternalTransfer) {
+          internalTransfersCount++;
+        }
+        if (localRec.shouldIgnoreInTotals) {
+          ignoredInTotalsCount++;
+        }
+
+        if (localRec.method === 'USER_RULE') {
+          userRulesCount++;
+        } else if (localRec.method === 'DESCRIPTION_MATCH') {
+          descriptionMatchCount++;
+        }
+
+        // Check categorisation source
+        let isAiApplied = false;
+        let finalConfidence = localRec.confidence;
+        let finalReason = localRec.evidence.join(' | ');
+
+        if (aiMatch) {
+          isAiApplied = true;
+          aiFallbackCount++;
+          finalConfidence = 0.95; // AI confidence booster
+          finalReason = "Mapeado e Higienizado por Inteligência Artificial (Gemini Fallback)";
+        } else {
+          // Local stats breakdown
+          if (localRec.confidence >= AUTO_ACCEPT) {
+            localAutoCount++;
+          } else if (localRec.confidence >= ACCEPT_WITH_BADGE) {
+            localProbableCount++;
+          }
+        }
+
+        // Check final review status
+        const isCurrentlyReviewed = finalConfidence < ACCEPT_WITH_BADGE;
+        if (isCurrentlyReviewed) {
+          needsReviewCount++;
+        }
+
         return {
           pluggyId: tx.pluggyId,
           date: dateStr,
@@ -961,14 +1038,35 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
           paymentData: tx.paymentData,
           merchant: tx.merchantName,
           detectedDirection: tx.detectedDirection,
-          directionConfidence: aiMatch ? 0.95 : localRec.confidence,
-          directionReason: aiMatch ? "Mapeado e Higienizado por Inteligência Artificial (Gemini Fallback)" : localRec.evidence,
-          isLikelyInternalTransfer: tx.isLikelyInternalTransfer,
-          shouldIgnoreInTotals: tx.shouldIgnoreInTotals
+          directionConfidence: finalConfidence,
+          directionReason: finalReason,
+          isLikelyInternalTransfer: localRec.isLikelyInternalTransfer,
+          shouldIgnoreInTotals: localRec.shouldIgnoreInTotals,
+          needsReview: isCurrentlyReviewed,
+          aiUsed: isAiApplied,
+          method: localRec.method
         };
       });
 
-      res.json({ success: true, ok: true, transactions: categorizedList, accounts: rawAccountsBatch });
+      const recognitionStats = {
+        total: rawTransactionsBatch.length,
+        userRules: userRulesCount,
+        descriptionMatch: descriptionMatchCount,
+        localAuto: localAutoCount,
+        localProbable: localProbableCount,
+        aiFallback: aiFallbackCount,
+        needsReview: needsReviewCount,
+        internalTransfers: internalTransfersCount,
+        ignoredInTotals: ignoredInTotalsCount
+      };
+
+      res.json({ 
+        success: true, 
+        ok: true, 
+        transactions: categorizedList, 
+        accounts: rawAccountsBatch,
+        recognitionStats
+      });
     } catch (err: any) {
       console.error("[Pluggy sync HTTP Router Error]:", err.message);
       res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ 

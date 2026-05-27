@@ -917,7 +917,16 @@ export const DashboardView = React.memo(function DashboardView({
                       className="text-xs hover:bg-emerald-50/20 transition-colors cursor-pointer group/row"
                     >
                       <td className="px-6 py-4 text-slate-500 font-medium">{item.date}</td>
-                      <td className="px-6 py-4 font-bold text-slate-700 max-w-[200px] sm:max-w-[300px] truncate" title={item.desc}>{item.desc}</td>
+                      <td className="px-6 py-4 font-bold text-slate-700 max-w-[240px] truncate" title={item.desc}>
+                        <div className="flex items-center gap-2">
+                          <span className="truncate">{item.desc}</span>
+                          {item.needsReview && (
+                            <span className="shrink-0 bg-amber-50 text-amber-600 border border-amber-200 px-1.5 py-0.5 rounded-md text-[8px] font-black uppercase tracking-wider animate-pulse flex items-center gap-0.5" title="Classificação de baixa confiança. Clique para revisar ou editar.">
+                              <Sparkles className="w-2 h-2" /> Revisar
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-6 py-4">
                         <span className="inline-block max-w-[130px] truncate align-middle text-center bg-slate-50 border border-slate-100 text-slate-600 px-2 py-0.5 rounded-full text-[10px] font-bold" title={item.cat}>{item.cat}</span>
                       </td>
@@ -1500,7 +1509,16 @@ export const DashboardView = React.memo(function DashboardView({
                                 {item.cat}
                               </span>
                             </td>
-                            <td className="px-6 py-4 font-bold text-slate-700 max-w-[200px] sm:max-w-[300px] truncate" title={item.desc}>{item.desc}</td>
+                            <td className="px-6 py-4 font-bold text-slate-700 max-w-[240px] truncate" title={item.desc}>
+                              <div className="flex items-center gap-2">
+                                <span className="truncate">{item.desc}</span>
+                                {item.needsReview && (
+                                  <span className="shrink-0 bg-amber-50 text-amber-600 border border-amber-200 px-1.5 py-0.5 rounded-md text-[8px] font-black uppercase tracking-wider animate-pulse flex items-center gap-0.5" title="Classificação de baixa confiança. Clique para revisar ou editar.">
+                                    <Sparkles className="w-2 h-2" /> Revisar
+                                  </span>
+                                )}
+                              </div>
+                            </td>
                             <td className={`px-6 py-4 text-right pr-6 ${item.type === 'Despesa' ? 'text-rose-600' : 'text-emerald-600'}`}>
                               <div className="flex flex-col items-end">
                                 <span className="font-black text-sm tracking-tight" >
@@ -1534,7 +1552,14 @@ export const DashboardView = React.memo(function DashboardView({
                         <div className="flex justify-between items-start mb-2">
                           <div className="flex-1 min-w-0 pr-4">
                             <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-0.5">{item.date}</div>
-                            <h4 className="font-bold text-slate-800 text-sm truncate uppercase tracking-tight">{item.desc}</h4>
+                            <div className="flex items-center gap-1.5">
+                              <h4 className="font-bold text-slate-800 text-sm truncate uppercase tracking-tight flex-1">{item.desc}</h4>
+                              {item.needsReview && (
+                                <span className="shrink-0 bg-amber-50 text-amber-600 border border-amber-200 px-1.5 py-0.5 rounded-md text-[8px] font-black uppercase tracking-wider animate-pulse">
+                                  Revisar
+                                </span>
+                              )}
+                            </div>
                           </div>
                           <div className="text-right flex flex-col items-end">
                             <span className={`text-[13px] font-black tracking-tight ${isDespesa ? 'text-rose-600' : 'text-emerald-600'}`}>
