@@ -20,7 +20,7 @@ service cloud.firestore {
     
     function isValidTransaction(data) {
       return data.keys().hasAll(['date', 'desc', 'cat', 'type', 'amount', 'source', 'userId', 'createdAt', 'updatedAt']) &&
-             data.size() >= 9 && data.size() <= 35 &&
+             data.size() >= 9 && data.size() <= 60 &&
              data.date is string && data.date.size() <= 20 &&
              data.desc is string && data.desc.size() <= 200 &&
              data.cat is string && data.cat.size() <= 100 &&
@@ -28,7 +28,15 @@ service cloud.firestore {
              data.amount is number &&
              data.source is string && data.source.size() <= 100 &&
              data.userId is string && data.userId == request.auth.uid &&
-             data.createdAt is timestamp && data.updatedAt is timestamp;
+             data.createdAt is timestamp && data.updatedAt is timestamp &&
+             (!data.keys().hasAny(['recognitionConfidence']) || (data.recognitionConfidence is number && data.recognitionConfidence >= 0.0 && data.recognitionConfidence <= 1.0)) &&
+             (!data.keys().hasAny(['recognitionMethod']) || (data.recognitionMethod is string && data.recognitionMethod.size() <= 100)) &&
+             (!data.keys().hasAny(['recognitionEvidence']) || (data.recognitionEvidence is list && data.recognitionEvidence.size() <= 50)) &&
+             (!data.keys().hasAny(['needsReview']) || data.needsReview is bool) &&
+             (!data.keys().hasAny(['aiUsed']) || data.aiUsed is bool) &&
+             (!data.keys().hasAny(['aiReason']) || (data.aiReason is string && data.aiReason.size() <= 500)) &&
+             (!data.keys().hasAny(['merchantKey']) || (data.merchantKey is string && data.merchantKey.size() <= 200)) &&
+             (!data.keys().hasAny(['cleanDescription']) || (data.cleanDescription is string && data.cleanDescription.size() <= 300));
     }
     
     function isValidUserProfile(data) {
@@ -111,7 +119,8 @@ service cloud.firestore {
           'rawAmount', 'sourceRaw', 'bankRawName', 'accountRawName', 'accountLabel',
           'accountId', 'itemId', 'pluggyType', 'accountType', 'accountSubtype',
           'operationType', 'paymentData', 'merchant', 'descriptionRaw', 'detectedDirection',
-          'directionConfidence', 'directionReason', 'isLikelyInternalTransfer', 'shouldIgnoreInTotals', 'pluggyId'
+          'directionConfidence', 'directionReason', 'isLikelyInternalTransfer', 'shouldIgnoreInTotals', 'pluggyId',
+          'recognitionConfidence', 'recognitionMethod', 'recognitionEvidence', 'needsReview', 'aiUsed', 'aiReason', 'merchantKey', 'cleanDescription'
         ])
       );
     }

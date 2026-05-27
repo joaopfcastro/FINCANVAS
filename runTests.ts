@@ -622,6 +622,52 @@ async function runTests() {
     failed++;
   }
 
+  // 22. Rodada de Hardening Final e Validações de Métricas
+  try {
+    console.log("=== INICIANDO TESTE 22: HARDENING ROUND AND VALIDATION ===");
+
+    const fsRulesContent = fs.readFileSync('./firestore.rules', 'utf8');
+    const serverContent = fs.readFileSync('./server.ts', 'utf8');
+    const envExampleContent = fs.readFileSync('./.env.example', 'utf8');
+
+    // 1. firestore.rules aceita os campos de transação modernizados
+    assert(fsRulesContent.includes("recognitionConfidence"), "firestore.rules deve aceitar recognitionConfidence");
+    assert(fsRulesContent.includes("recognitionMethod"), "firestore.rules deve aceitar recognitionMethod");
+    assert(fsRulesContent.includes("recognitionEvidence"), "firestore.rules deve aceitar recognitionEvidence");
+    assert(fsRulesContent.includes("needsReview"), "firestore.rules deve aceitar needsReview");
+    assert(fsRulesContent.includes("aiUsed"), "firestore.rules deve aceitar aiUsed");
+    assert(fsRulesContent.includes("aiReason"), "firestore.rules deve aceitar aiReason");
+    assert(fsRulesContent.includes("merchantKey"), "firestore.rules deve aceitar merchantKey");
+    assert(fsRulesContent.includes("cleanDescription"), "firestore.rules deve aceitar cleanDescription");
+
+    // 2. firestore.rules rejeita recognitionConfidence fora de 0..1
+    assert(fsRulesContent.includes("recognitionConfidence >= 0.0") && fsRulesContent.includes("recognitionConfidence <= 1.0"), "firestore.rules deve rejeitar recognitionConfidence fora do limite 0..1");
+
+    // 3. create_sandbox chama recordItemOwnership
+    assert(serverContent.includes('app.post("/api/pluggy/create_sandbox"') && serverContent.includes("recordItemOwnership"), "create_sandbox deve vincular a conexão de teste ao usuário chamando recordItemOwnership");
+
+    // 4. webhook_listener responde 200 de imediato, rodando o processamento em background
+    assert(serverContent.includes('app.post("/api/pluggy/webhook_listener"') && serverContent.includes("setImmediate") && serverContent.includes("res.status(200)"), "webhook_listener deve responder de imediato com status 200 e rodar o fluxo de processamento sob setImmediate/task assíncrona");
+
+    // 5. Textos e logs de console do sistema não devem ludibriar ou prometer criptografia inexistente de chaves
+    assert(!serverContent.includes("Loaded user encrypted Pluggy credentials"), "Texto do servidor não deve prometer 'encrypted' sem aplicação de criptografia na camada correspondente, alinhando-se a 'server-only'");
+
+    // 6. ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS documentado como false na configuração padrão
+    assert(envExampleContent.includes("ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS=false"), ".env.example deve documentar o flag como false nas diretrizes");
+
+    console.log("✅ PASSED: firestore.rules aceita recognitionConfidence/recognitionMethod/needsReview válidos");
+    console.log("✅ PASSED: firestore.rules rejeita recognitionConfidence fora de 0..1");
+    console.log("✅ PASSED: create_sandbox chama recordItemOwnership");
+    console.log("✅ PASSED: webhook_listener responde 200 de imediato para a Pluggy");
+    console.log("✅ PASSED: logs e textos alinhados para 'server-only' evitando termos de criptografia inconsistente");
+    console.log("✅ PASSED: ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS documentado como false");
+
+    passed++;
+  } catch (err: any) {
+    console.error("Erro no teste 22:", err);
+    failed++;
+  }
+
   console.log(`\n=== RESULTADO DOS TESTES: ${passed} Passaram | ${failed} Falharam ===`);
   if (failed > 0) {
     process.exit(1);

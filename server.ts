@@ -99,6 +99,13 @@ async function recordItemOwnership(uid: string, itemId: string, email?: string) 
       updatedAt
     }, { merge: true });
 
+    // Safely update users/{uid}.pluggyItemIds array
+    await db.collection("users").doc(uid).set({
+      pluggyItemIds: admin.firestore.FieldValue.arrayUnion(itemId)
+    }, { merge: true }).catch((err) => {
+      console.warn(`[Item Ownership Index] Failed updating user doc array pluggyItemIds for uid ${uid}:`, err.message);
+    });
+
     console.log(`[Item Ownership Index] Successfully mapped item: ${itemId} -> user: ${uid}`);
   } catch (err: any) {
     console.error(`[Item Ownership Index Error] Failed registering itemId ${itemId}:`, err.message);
@@ -424,7 +431,7 @@ async function startServer() {
           clientId = sData?.clientId || sData?.pluggyClientId;
           clientSecret = sData?.clientSecret || sData?.pluggyClientSecret;
           if (clientId && clientSecret) {
-            console.log("Loaded user encrypted Pluggy credentials");
+            console.log("Loaded user server-only Pluggy credentials");
           }
         }
       } catch (err: any) {
@@ -969,6 +976,11 @@ async function startServer() {
       const { clientId, clientSecret } = await getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       const itemData = await PluggyService.createSandbox(apiKey, bankConnectorId || 2);
+      
+      if (itemData && itemData.id) {
+        await recordItemOwnership(req.user.uid, itemData.id, req.user.email);
+      }
+
       res.json({ success: true, item: itemData });
     } catch (err: any) {
       console.error("[Pluggy create_sandbox HTTP Router Error]:", err.message);
@@ -1079,126 +1091,141 @@ async function startServer() {
     console.log("[Pluggy Webhook Receiver] Novo evento capturado no endpoint:");
     console.log(JSON.stringify(req.body, null, 2));
 
-    try {
-      const { event, id, item, transactionIds, clientUserId, triggeredBy } = req.body;
-      const itemId = item?.id || req.body.itemId || undefined;
-      const resolvedClientId = clientUserId || item?.clientUserId || undefined;
-      
-      const eventId = id || `wh-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-      let logStatus: "received" | "processed" | "ignored" | "failed" | "requires_user_action" | "security_mismatch" | "unmapped" = "received";
-      
-      let errMsg = req.body.error;
-      if (errMsg && typeof errMsg === 'object') {
-        errMsg = JSON.stringify(errMsg);
-      } else if (errMsg) {
-        errMsg = String(errMsg);
-      }
+    // Respond 200 quickly to Pluggy, before doing heavy async processing
+    res.status(200).json({ success: true, message: "Webhook received. Processing in background." });
 
-      switch (event) {
-        case "item/updated":
-          logStatus = "processed";
-          break;
-        case "item/error":
-          if (errMsg && (errMsg.toLowerCase().includes("user") || errMsg.toLowerCase().includes("mfa") || errMsg.toLowerCase().includes("credentials"))) {
+    // Background asynchronous processing
+    setImmediate(async () => {
+      try {
+        const { event, id, item, transactionIds, clientUserId, triggeredBy } = req.body;
+        const itemId = item?.id || req.body.itemId || undefined;
+        const resolvedClientId = clientUserId || item?.clientUserId || undefined;
+        
+        const eventId = id || `wh-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+        let logStatus: "received" | "processed" | "ignored" | "failed" | "requires_user_action" | "security_mismatch" | "unmapped" = "received";
+        
+        let errMsg = req.body.error;
+        if (errMsg && typeof errMsg === 'object') {
+          errMsg = JSON.stringify(errMsg);
+        } else if (errMsg) {
+          errMsg = String(errMsg);
+        }
+
+        switch (event) {
+          case "item/updated":
+            logStatus = "processed";
+            break;
+          case "item/error":
+            if (errMsg && (errMsg.toLowerCase().includes("user") || errMsg.toLowerCase().includes("mfa") || errMsg.toLowerCase().includes("credentials"))) {
+              logStatus = "requires_user_action";
+            } else {
+              logStatus = "failed";
+            }
+            break;
+          case "item/waiting_user_input":
+          case "item/waiting_user_action":
             logStatus = "requires_user_action";
-          } else {
-            logStatus = "failed";
+            break;
+          case "item/login_succeeded":
+            logStatus = "processed";
+            break;
+          case "transactions/created":
+          case "transactions/updated":
+          case "transactions/deleted":
+            logStatus = "processed";
+            break;
+          case "connector/status_updated":
+            logStatus = "processed";
+            break;
+          default:
+            logStatus = "received";
+            break;
+        }
+
+        // Zero-Trust resolution: Who is the actual owner of this item?
+        let ownerUid: string | null = null;
+        let ownerUidFromIndex: string | null = null;
+
+        if (itemId) {
+          const indexDoc = await db.collection("pluggyItemIndex").doc(itemId).get();
+          if (indexDoc.exists) {
+            ownerUidFromIndex = indexDoc.data()?.uid || null;
           }
-          break;
-        case "item/waiting_user_input":
-        case "item/waiting_user_action":
-          logStatus = "requires_user_action";
-          break;
-        case "item/login_succeeded":
-          logStatus = "processed";
-          break;
-        case "transactions/created":
-        case "transactions/updated":
-        case "transactions/deleted":
-          logStatus = "processed";
-          break;
-        case "connector/status_updated":
-          logStatus = "processed";
-          break;
-        default:
-          logStatus = "received";
-          break;
-      }
-
-      // Zero-Trust resolution: Who is the actual owner of this item?
-      let ownerUid: string | null = null;
-      let ownerUidFromIndex: string | null = null;
-
-      if (itemId) {
-        const indexDoc = await db.collection("pluggyItemIndex").doc(itemId).get();
-        if (indexDoc.exists) {
-          ownerUidFromIndex = indexDoc.data()?.uid || null;
         }
-      }
 
-      if (resolvedClientId && ownerUidFromIndex) {
-        // Validation: If clientUserId and index map mismatch, raise security exception tag
-        if (resolvedClientId !== ownerUidFromIndex) {
-          console.error(`[Security Mismatch] Webhook payload clientUserId: ${resolvedClientId} does NOT match registered index owner: ${ownerUidFromIndex}`);
-          logStatus = "security_mismatch";
-          ownerUid = ownerUidFromIndex; // fallback lock onto original index registration
-        } else {
+        if (resolvedClientId && ownerUidFromIndex) {
+          // Validation: If clientUserId and index map mismatch, raise security exception tag
+          if (resolvedClientId !== ownerUidFromIndex) {
+            console.error(`[Security Mismatch] Webhook payload clientUserId: ${resolvedClientId} does NOT match registered index owner: ${ownerUidFromIndex}`);
+            logStatus = "security_mismatch";
+            ownerUid = ownerUidFromIndex; // fallback lock onto original index registration
+          } else {
+            ownerUid = resolvedClientId;
+          }
+        } else if (resolvedClientId) {
           ownerUid = resolvedClientId;
+        } else if (ownerUidFromIndex) {
+          ownerUid = ownerUidFromIndex;
         }
-      } else if (resolvedClientId) {
-        ownerUid = resolvedClientId;
-      } else if (ownerUidFromIndex) {
-        ownerUid = ownerUidFromIndex;
+
+        const eventLog: any = {
+          id: eventId,
+          event: event || "item/updated",
+          itemId: itemId || null,
+          transactionIds: transactionIds || null,
+          clientUserId: resolvedClientId || null,
+          triggeredBy: triggeredBy || null,
+          receivedAt: new Date().toISOString(),
+          status: logStatus,
+          itemStatus: item?.status || null,
+          rawBody: req.body,
+          error: errMsg || null,
+          ownerResolvedVia: resolvedClientId && ownerUidFromIndex ? "both" : (resolvedClientId ? "clientUserId" : (ownerUidFromIndex ? "index" : "unresolved"))
+        };
+
+        if (!ownerUid) {
+          logStatus = "unmapped";
+          eventLog.status = "unmapped";
+          console.warn(`[Webhook Receiver] Unmapped webhook: no owner could be found for itemId: ${itemId}, clientUserId: ${resolvedClientId}`);
+          await db.collection("pluggy_unmapped_webhooks").doc(eventId).set(eventLog);
+        } else {
+          eventLog.ownerUid = ownerUid;
+          // Persist safely inside the authenticated owner's subcollection
+          await db.collection("users").doc(ownerUid).collection("pluggyWebhookEvents").doc(eventId).set(eventLog);
+          console.log(`[Webhook Receiver] Secure tenant log appended for uid: ${ownerUid}`);
+        }
+
+        // Add to global diagnostic feed for dev
+        receivedWebhookEvents.unshift({
+          ...eventLog,
+          id: eventId,
+          itemId: itemId || undefined,
+          transactionIds: transactionIds || undefined,
+          clientUserId: resolvedClientId || undefined,
+          triggeredBy: triggeredBy || undefined,
+          itemStatus: item?.status || undefined,
+          error: errMsg || undefined
+        });
+        if (receivedWebhookEvents.length > 100) {
+          receivedWebhookEvents.length = 100;
+        }
+
+        console.log(`[Pluggy Webhook Receiver] Evento '${event}' registrado com sucesso. Status: ${logStatus}`);
+      } catch (innerErr: any) {
+        console.error("[Pluggy Webhook Receiver Async Background Error]:", innerErr.message);
+        try {
+          const eventId = req.body.id || `wh-err-${Date.now()}`;
+          await db.collection("pluggy_failed_webhook_processing").doc(eventId).set({
+            id: eventId,
+            error: innerErr.message,
+            rawBody: req.body,
+            failedAt: new Date().toISOString()
+          });
+        } catch (failSaveErr: any) {
+          console.error("Failed to even log the background error to firestore:", failSaveErr.message);
+        }
       }
-
-      const eventLog: any = {
-        id: eventId,
-        event: event || "item/updated",
-        itemId: itemId || null,
-        transactionIds: transactionIds || null,
-        clientUserId: resolvedClientId || null,
-        triggeredBy: triggeredBy || null,
-        receivedAt: new Date().toISOString(),
-        status: logStatus,
-        itemStatus: item?.status || null,
-        rawBody: req.body,
-        error: errMsg || null,
-        ownerResolvedVia: resolvedClientId && ownerUidFromIndex ? "both" : (resolvedClientId ? "clientUserId" : (ownerUidFromIndex ? "index" : "unresolved"))
-      };
-
-      if (!ownerUid) {
-        logStatus = "unmapped";
-        eventLog.status = "unmapped";
-        console.warn(`[Webhook Receiver] Unmapped webhook: no owner could be found for itemId: ${itemId}, clientUserId: ${resolvedClientId}`);
-        await db.collection("pluggy_unmapped_webhooks").doc(eventId).set(eventLog);
-      } else {
-        eventLog.ownerUid = ownerUid;
-        // Persist safely inside the authenticated owner's subcollection
-        await db.collection("users").doc(ownerUid).collection("pluggyWebhookEvents").doc(eventId).set(eventLog);
-        console.log(`[Webhook Receiver] Secure tenant log appended for uid: ${ownerUid}`);
-      }
-
-      // Add to global diagnostic feed for dev
-      receivedWebhookEvents.unshift({
-        ...eventLog,
-        id: eventId,
-        itemId: itemId || undefined,
-        transactionIds: transactionIds || undefined,
-        clientUserId: resolvedClientId || undefined,
-        triggeredBy: triggeredBy || undefined,
-        itemStatus: item?.status || undefined,
-        error: errMsg || undefined
-      });
-      if (receivedWebhookEvents.length > 100) {
-        receivedWebhookEvents.length = 100;
-      }
-
-      console.log(`[Pluggy Webhook Receiver] Evento '${event}' registrado com sucesso. Status: ${logStatus}`);
-      return res.status(200).json({ success: true, eventLog });
-    } catch (err: any) {
-      console.error("[Pluggy Webhook Receiver Error]:", err.message);
-      return res.status(500).json({ error: err.message });
-    }
+    });
   });
 
   // 3. Sincronizar e categorizar transações bancárias do Pluggy com IA (Gemini)
