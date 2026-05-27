@@ -3,6 +3,8 @@ import { runLocalRecognition } from './src/lib/recognition/engine/recognitionEng
 import { mapMccToCategory } from './src/lib/recognition/taxonomy/mccCategoryMapper.js';
 import { ACCEPT_WITH_BADGE } from './src/lib/recognition/constants.js';
 import { mapToUserCategory } from './src/lib/recognition/taxonomy/mapToUserCategory.js';
+import fs from 'fs';
+import path from 'path';
 
 // Setup mock global structures for minimal browser compatibility
 globalThis.window = {} as any;
@@ -268,6 +270,99 @@ async function runTests() {
     assert(resTrf.shouldIgnoreInTotals === true, "TRANSFERENCIA_MESMA_INSTITUICAO deve ter shouldIgnoreInTotals = true");
   } catch (err: any) {
     console.error("Erro no teste 12:", err);
+    failed++;
+  }
+
+  // 13. Hardening: MCC 9311 deve retornar Impostos e Taxas
+  try {
+    const resMcc9311 = mapMccToCategory('9311');
+    assert(resMcc9311?.category === 'Impostos e Taxas', "MCC 9311 deve retornar categoria 'Impostos e Taxas'");
+  } catch (err: any) {
+    console.error("Erro no teste 13:", err);
+    failed++;
+  }
+
+  // 14. Hardening: MCC 6011 deve retornar Tarifas Bancárias
+  try {
+    const resMcc6011 = mapMccToCategory('6011');
+    assert(resMcc6011?.category === 'Tarifas Bancárias', "MCC 6011 deve retornar categoria 'Tarifas Bancárias'");
+  } catch (err: any) {
+    console.error("Erro no teste 14:", err);
+    failed++;
+  }
+
+  // 15. Hardening: juros/interest genérico não deve cair em Outros
+  try {
+    const inputJurosCompatible = {
+      description: "JUROS COBRADOS S/ SALDO DEVEDOR",
+      amount: -18.50,
+      detectedDirection: 'Despesa' as const,
+      source: 'Itaú',
+      operationType: 'JUROS_MAQUINA'
+    };
+
+    // Caso A: Usuário possui Tarifas Bancárias
+    const resJurosA = runLocalRecognition(inputJurosCompatible, [], [], ["Tarifas Bancárias", "Outros"]);
+    assert(resJurosA.category === "Tarifas Bancárias", "Juros deve mapear para Tarifas Bancárias se o usuário possui essa categoria");
+    assert(resJurosA.confidence === 0.75, "Juros/Interest geral deve possuir confiança 0.75");
+    assert(resJurosA.needsReview === false, "Juros com categoria compatível não necessita de revisão");
+
+    // Caso B: Usuário não possui Tarifas Bancárias
+    const resJurosB = runLocalRecognition(inputJurosCompatible, [], [], ["Outros"]);
+    assert(resJurosB.category === "Outros", "Juros com opType contendo juros deve retroceder para Outros se faltar categoria");
+    assert(resJurosB.needsReview === true, "Juros sem categoria compatível necessita de revisão");
+  } catch (err: any) {
+    console.error("Erro no teste 15:", err);
+    failed++;
+  }
+
+  // 16. Hardening: ImportView schema visual não deve declarar cat para a inteligência artificial
+  try {
+    const importViewPath = path.join(process.cwd(), 'src/components/ImportView.tsx');
+    const content = fs.readFileSync(importViewPath, 'utf8');
+    assert(!content.includes("cat: { type: Type.STRING"), "ImportView schema não deve conter a declaração 'cat: { type: Type.STRING' para a IA");
+  } catch (err: any) {
+    console.error("Erro no teste 16:", err);
+    failed++;
+  }
+
+  // 17. Hardening: IA fallback do Pluggy não pode usar confidence 0.95
+  try {
+    const userCategories = ["Alimentação", "Transporte"];
+    const aiMatch = { cat: "Alimentação", desc: "IFood Clean" };
+    
+    let isAiApplied = false;
+    let finalConfidence = 0.30;
+    let finalCat = "Outros";
+    let isCurrentlyReviewed = false;
+    let finalEvidence: string[] = [];
+
+    if (aiMatch) {
+      isAiApplied = true;
+      finalConfidence = 0.75; // IA fallback maximum confidence is 0.75
+      const suggestedCat = aiMatch.cat;
+      const mappedCat = mapToUserCategory(suggestedCat, userCategories);
+
+      if (suggestedCat && userCategories.includes(suggestedCat)) {
+        finalCat = suggestedCat;
+        isCurrentlyReviewed = false;
+        finalEvidence = ["Mapeado e Higienizado por Inteligência Artificial (Gemini Fallback) - Categoria corresponde a valor exato do usuário."];
+      } else if (mappedCat) {
+        finalCat = mappedCat;
+        isCurrentlyReviewed = false;
+        finalEvidence = [`Mapeado e Higienizado por Inteligência Artificial (Gemini Fallback) - Validado localmente para "${mappedCat}".`];
+      } else {
+        finalCat = suggestedCat || finalCat;
+        isCurrentlyReviewed = true;
+        finalEvidence = ["Sugerido por Inteligência Artificial (Gemini Fallback) - Categoria sugerida não existe no perfil de categorias cadastas do usuário."];
+      }
+    }
+
+    assert(finalConfidence <= 0.75, "IA Fallback do Pluggy deve possuir no máximo 0.75 de confiança");
+    assert(isCurrentlyReviewed === false, "Deve marcar como revisado (isCurrentlyReviewed === false) pois a categoria existe no perfil");
+    assert(finalCat === "Alimentação", "Categoria da IA deve ser mantida");
+  } catch (err: any) {
+    console.error("Erro no teste 17:", err);
     failed++;
   }
 

@@ -90,7 +90,7 @@ export function mapMccToCategory(mcc: string | number | null): MccMappingResult 
   // Taxas, Impostos e Licenciamentos Governamentais (Impostos)
   if ([9311, 9399].includes(mccCode)) {
     return {
-      category: 'Outros',
+      category: 'Impostos e Taxas',
       evidence: `MCC ${mcc} refere-se a Taxas Administrativas, Impostos Estaduais ou Federais e Serviços do Governo.`
     };
   }
@@ -98,7 +98,7 @@ export function mapMccToCategory(mcc: string | number | null): MccMappingResult 
   // Serviços e Tarifas de Instituições Financeiras (Tarifas / Bancos)
   if ([6010, 6011, 6012, 6051].includes(mccCode)) {
     return {
-      category: 'Outros',
+      category: 'Tarifas Bancárias',
       evidence: `MCC ${mcc} refere-se a Instituições Financeiras, Saques, Câmbio ou Tarifas de Serviços.`
     };
   }

@@ -115,8 +115,6 @@ Siga estritamente estas diretrizes de extração:
 3. Extraia a descrição literal do estabelecimento ou pagamento sem encurtar.
 4. Identifique o banco emissor ou origem (ex: Itaú, Bradesco, Recibo).
 
-Não faça classificação de categorias. Retorne o campo 'cat' vazio.
-
 Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, sem explicações textuais fora do JSON.`;
 
         const response = await secureGenerateContent({
@@ -133,10 +131,11 @@ Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, 
                  properties: {
                    date: { type: Type.STRING, description: "Date in DD/MM/YYYY" },
                    desc: { type: Type.STRING, description: "Transaction description" },
-                   cat: { type: Type.STRING, description: "Category (leave empty)" },
                    type: { type: Type.STRING, description: "Either 'Receita' or 'Despesa'" },
                    amount: { type: Type.NUMBER, description: "Value of transaction (numeric)" },
-                   source: { type: Type.STRING, description: "Source of transaction, e.g. Bradesco" }
+                   source: { type: Type.STRING, description: "Source of transaction, e.g. Bradesco" },
+                   merchantName: { type: Type.STRING, description: "Clean name of merchant if identifiable" },
+                   cnpj: { type: Type.STRING, description: "CNPJ tax register number if specified" }
                  },
                  required: ["date", "desc", "type", "amount", "source"]
                }
@@ -162,7 +161,9 @@ Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, 
           description: item.desc,
           amount: item.amount,
           detectedDirection: item.type as 'Receita' | 'Despesa',
-          source: item.source || 'Importação'
+          source: item.source || 'Importação',
+          cnpj: item.cnpj || null,
+          merchant: item.merchantName || null
         }, [], [], userCategories);
 
         return {

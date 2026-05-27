@@ -25,6 +25,18 @@ export function runLocalRecognition(
 ): RecognitionResult {
   const { description, amount, detectedDirection, operationType, mcc, cnpj, merchant } = input;
 
+  const selectCategory = (choices: string[], fallback: string): string => {
+    for (const choice of choices) {
+      const found = userCategories.find(c => c.trim().toLowerCase() === choice.trim().toLowerCase());
+      if (found) return found;
+    }
+    const foundFallback = userCategories.find(c => c.trim().toLowerCase() === fallback.trim().toLowerCase());
+    if (foundFallback) return foundFallback;
+    
+    const foundOutros = userCategories.find(c => c.trim().toLowerCase() === 'outros' || c.trim().toLowerCase() === 'outras');
+    return foundOutros || 'Outros';
+  };
+
   // 1. Normalize Description & Amount signs
   const originalDescription = description;
   const cleanedDesc = cleanDescription(description);
@@ -126,18 +138,6 @@ export function runLocalRecognition(
       return result as RecognitionResult;
     }
 
-    const selectCategory = (choices: string[], fallback: string): string => {
-      for (const choice of choices) {
-        const found = userCategories.find(c => c.trim().toLowerCase() === choice.trim().toLowerCase());
-        if (found) return found;
-      }
-      const foundFallback = userCategories.find(c => c.trim().toLowerCase() === fallback.trim().toLowerCase());
-      if (foundFallback) return foundFallback;
-      
-      const foundOutros = userCategories.find(c => c.trim().toLowerCase() === 'outros' || c.trim().toLowerCase() === 'outras');
-      return foundOutros || 'Outros';
-    };
-
     if (opUpper === 'PACOTE_TARIFA_SERVICOS' || opUpper === 'TARIFA_SERVICOS_AVULSOS') {
       result.category = selectCategory(['Tarifas Bancárias'], 'Tarifas Bancárias');
       result.cleanDescription = 'Tarifa de Serviços Bancários';
@@ -209,12 +209,15 @@ export function runLocalRecognition(
       result.evidence = ['Operação bancária expressamente registrada como faturamento salarial.'];
       return result as RecognitionResult;
     } else if (typeLower.includes('juros') || typeLower.includes('interest')) {
-      result.category = 'Outros';
+      const targetCat = selectCategory(['Tarifas Bancárias'], 'Tarifas Bancárias');
+      const hasCompatible = userCategories.some(c => c.trim().toLowerCase() === 'tarifas bancárias');
+
+      result.category = targetCat;
       result.cleanDescription = 'Juros / Encargos';
-      result.confidence = 0.85;
+      result.confidence = 0.75;
       result.method = 'OPERATION_TYPE';
-      result.evidence = ['Registrado no faturamento ou despesa de juros bancários.'];
-      result.needsReview = false;
+      result.needsReview = !hasCompatible;
+      result.evidence = [`Cobrança genérica de juros ou encargos bancários (${operationType}).` + (!hasCompatible ? ' Usuário não possui categoria de Tarifas Bancárias cadastrada.' : '')];
       return result as RecognitionResult;
     }
   }
@@ -262,7 +265,7 @@ export function runLocalRecognition(
   if (mcc) {
     const mappedMcc = mapMccToCategory(mcc);
     if (mappedMcc) {
-      result.category = mappedMcc.category;
+      result.category = selectCategory([mappedMcc.category], mappedMcc.category);
       result.confidence = 0.85;
       result.method = 'MCC';
       result.needsReview = false;

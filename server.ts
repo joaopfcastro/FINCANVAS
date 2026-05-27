@@ -20,6 +20,7 @@ interface LearnedRule {
   updatedAt?: any;
 }
 import { runLocalRecognition } from "./src/lib/recognition/engine/recognitionEngine";
+import { mapToUserCategory } from "./src/lib/recognition/taxonomy/mapToUserCategory";
 import { AUTO_ACCEPT, ACCEPT_WITH_BADGE, REVIEW_OR_AI } from "./src/lib/recognition/constants";
 import { RawTransactionInput as NewRawInput, UserRecognitionRule } from "./src/lib/recognition/types";
 
@@ -988,8 +989,8 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         }
 
         // Final values resolved either from Gemini (if low confidence & succeeded) or from local recognition
-        const finalCat = aiMatch?.cat || localRec.category;
-        const finalDesc = aiMatch?.desc || localRec.cleanDescription;
+        let finalCat = localRec.category;
+        let finalDesc = localRec.cleanDescription;
 
         // Statistics accounting
         if (localRec.isLikelyInternalTransfer) {
@@ -1017,12 +1018,30 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         let isAiApplied = false;
         let finalConfidence = localRec.confidence;
         let finalEvidence = [...localRec.evidence];
+        let isCurrentlyReviewed = false;
 
         if (aiMatch) {
           isAiApplied = true;
           aiFallbackCount++;
-          finalConfidence = 0.95; // AI confidence booster
-          finalEvidence = ["Mapeado e Higienizado por Inteligência Artificial (Gemini Fallback)"];
+          finalConfidence = 0.75; // IA fallback maximum confidence is 0.75
+          finalDesc = aiMatch.desc || finalDesc;
+
+          const suggestedCat = aiMatch.cat;
+          const mappedCat = mapToUserCategory(suggestedCat, userCategories);
+
+          if (suggestedCat && userCategories.includes(suggestedCat)) {
+            finalCat = suggestedCat;
+            isCurrentlyReviewed = false;
+            finalEvidence = ["Mapeado e Higienizado por Inteligência Artificial (Gemini Fallback) - Categoria corresponde a valor exato do usuário."];
+          } else if (mappedCat) {
+            finalCat = mappedCat;
+            isCurrentlyReviewed = false;
+            finalEvidence = [`Mapeado e Higienizado por Inteligência Artificial (Gemini Fallback) - Validado localmente para "${mappedCat}".`];
+          } else {
+            finalCat = suggestedCat || finalCat;
+            isCurrentlyReviewed = true; // Se a categoria da IA for nova/não mapeável, manter needsReview = true
+            finalEvidence = ["Sugerido por Inteligência Artificial (Gemini Fallback) - Categoria sugerida não existe no perfil de categorias cadastas do usuário."];
+          }
         } else {
           // Local stats breakdown
           if (localRec.confidence >= AUTO_ACCEPT) {
@@ -1030,18 +1049,6 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
           } else if (localRec.confidence >= ACCEPT_WITH_BADGE) {
             localProbableCount++;
           }
-        }
-
-        // Check final review status
-        let isCurrentlyReviewed = false;
-        if (isAiApplied) {
-          // Se AI_FALLBACK foi usado, marcar needsReview false apenas se a resposta da IA for válida e categoria existir
-          if (aiMatch && aiMatch.cat && userCategories.includes(aiMatch.cat)) {
-            isCurrentlyReviewed = false;
-          } else {
-            isCurrentlyReviewed = true;
-          }
-        } else {
           isCurrentlyReviewed = localRec.needsReview || localRec.method === 'REVIEW_REQUIRED' || finalConfidence < ACCEPT_WITH_BADGE;
         }
 
