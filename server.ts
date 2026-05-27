@@ -415,7 +415,7 @@ async function startServer() {
     let clientId: string | undefined;
     let clientSecret: string | undefined;
 
-    // First try: Load from users/{uid}/secrets/pluggy
+    // 1. First try: Load from users/{uid}/secrets/pluggy
     if (uid) {
       try {
         const secretDoc = await db.collection("users").doc(uid).collection("secrets").doc("pluggy").get();
@@ -423,30 +423,45 @@ async function startServer() {
           const sData = secretDoc.data();
           clientId = sData?.clientId || sData?.pluggyClientId;
           clientSecret = sData?.clientSecret || sData?.pluggyClientSecret;
-          console.log(`[Pluggy Credentials] Loaded custom user-specific credentials for uid: ${uid}`);
+          if (clientId && clientSecret) {
+            console.log("Loaded user encrypted Pluggy credentials");
+          }
         }
       } catch (err: any) {
         console.warn(`[Pluggy Credentials] Failed reading private secret collection for uid ${uid}:`, err.message);
       }
     }
 
-    // Second try: fallback to headers or body from request
-    if (!clientId && req) {
-      clientId = req.headers["x-pluggy-client-id"] as string;
-      clientSecret = req.headers["x-pluggy-client-secret"] as string;
-
-      if (!clientId && req.body) {
-        clientId = req.body.pluggyClientId || req.body.clientId;
-        clientSecret = req.body.pluggyClientSecret || req.body.clientSecret;
-      }
-    }
-
-    // Third try: fallback to server global environment
+    // 2. Second try: fallback to server global environment
     if (!clientId) {
       clientId = process.env.PLUGGY_CLIENT_ID;
       clientSecret = process.env.PLUGGY_CLIENT_SECRET;
       if (clientId) {
-        console.log(`[Pluggy Credentials] Falling back to server global environment credentials.`);
+        console.log("Using global Pluggy credentials");
+      }
+    }
+
+    // 3. Fallback to headers/body ONLY if development and ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS=true
+    if (!clientId && req) {
+      const isProduction = process.env.NODE_ENV === "production" || process.env.VITE_USER_NODE_ENV === "production";
+      const allowHeaderCredentials = process.env.ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS === "true";
+
+      let headerClientId = req.headers["x-pluggy-client-id"] as string;
+      let headerClientSecret = req.headers["x-pluggy-client-secret"] as string;
+
+      if (!headerClientId && req.body) {
+        headerClientId = req.body.pluggyClientId || req.body.clientId;
+        headerClientSecret = req.body.pluggyClientSecret || req.body.clientSecret;
+      }
+
+      if (headerClientId || headerClientSecret) {
+        if (isProduction || !allowHeaderCredentials) {
+          console.warn("Rejected Pluggy credentials from client headers in production");
+        } else {
+          clientId = headerClientId;
+          clientSecret = headerClientSecret;
+          console.log("[Pluggy Credentials] Loaded credentials from insecure client headers/body (development fallback).");
+        }
       }
     }
 
@@ -463,7 +478,7 @@ async function startServer() {
 
   const isUuid = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id || "");
 
-  // 0. Check secure credentials status
+  // 0. Check secure credentials status (legacy endpoint forwarded for UI safety)
   app.get("/api/pluggy/credentials_status", requireAuth, async (req, res) => {
     const webhookSecretConfigured = !!process.env.PLUGGY_WEBHOOK_SECRET;
     try {
@@ -471,6 +486,117 @@ async function startServer() {
       res.json({ configured: true, webhookSecretConfigured });
     } catch {
       res.json({ configured: false, webhookSecretConfigured });
+    }
+  });
+
+  // 0.1 POST /api/pluggy/credentials/save
+  app.post("/api/pluggy/credentials/save", requireAuth, async (req: any, res) => {
+    try {
+      const { clientId, clientSecret } = req.body;
+      const uid = req.user.uid;
+
+      if (!clientId || !clientSecret) {
+        return res.status(400).json({ error: "Client ID e Client Secret são campos obrigatórios." });
+      }
+
+      // Valida autenticação na Pluggy (testa se as credenciais realmente funcionam)
+      try {
+        await PluggyService.authenticate(clientId.trim(), clientSecret.trim());
+      } catch (authErr: any) {
+        console.error("[Pluggy save credentials check failed]:", authErr.message);
+        return res.status(401).json({ error: "Falha ao conectar na Pluggy com estas credenciais: " + authErr.message });
+      }
+
+      // Salva no Firestore sob users/{uid}/secrets/pluggy usando o Admin SDK
+      await db.collection("users").doc(uid).collection("secrets").doc("pluggy").set({
+        clientId: clientId.trim(),
+        clientSecret: clientSecret.trim(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+
+      // Migração/limpeza imediata de legado do documento principal do usuário
+      await db.collection("users").doc(uid).update({
+        pluggyClientSecret: admin.firestore.FieldValue.delete(),
+        pluggyClientId: admin.firestore.FieldValue.delete()
+      }).catch(() => {});
+
+      const clientIdMasked = clientId.trim().substring(0, 4) + "••••";
+      res.json({
+        configured: true,
+        clientIdMasked
+      });
+    } catch (err: any) {
+      console.error("[Save Credentials Error]:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 0.2 GET /api/pluggy/credentials/status
+  app.get("/api/pluggy/credentials/status", requireAuth, async (req: any, res) => {
+    try {
+      const uid = req.user.uid;
+
+      // Realiza a migração/limpeza do legado automágica se estiver no user principal
+      const userDocRef = db.collection("users").doc(uid);
+      const userSnap = await userDocRef.get();
+      if (userSnap.exists) {
+        const uData = userSnap.data();
+        if (uData?.pluggyClientSecret || uData?.pluggyClientId) {
+          console.log(`[Migration] Purging legacy credentials from users/${uid} user profile`);
+          await userDocRef.update({
+            pluggyClientSecret: admin.firestore.FieldValue.delete(),
+            pluggyClientId: admin.firestore.FieldValue.delete()
+          }).catch((err) => console.error("Failed to delete legacy user doc fields:", err.message));
+        }
+      }
+
+      const secretDoc = await db.collection("users").doc(uid).collection("secrets").doc("pluggy").get();
+      if (secretDoc.exists) {
+        const sData = secretDoc.data();
+        const clientId = sData?.clientId || sData?.pluggyClientId || "";
+        res.json({
+          configured: true,
+          clientIdMasked: clientId.substring(0, 4) + "••••",
+          usingGlobalCredentials: false
+        });
+      } else if (process.env.PLUGGY_CLIENT_ID && process.env.PLUGGY_CLIENT_SECRET) {
+        const clientId = process.env.PLUGGY_CLIENT_ID;
+        res.json({
+          configured: true,
+          clientIdMasked: clientId.substring(0, 4) + "••••",
+          usingGlobalCredentials: true
+        });
+      } else {
+        res.json({
+          configured: false,
+          clientIdMasked: null,
+          usingGlobalCredentials: false
+        });
+      }
+    } catch (err: any) {
+      console.error("[Status Credentials Error]:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 0.3 DELETE /api/pluggy/credentials/delete
+  app.delete("/api/pluggy/credentials/delete", requireAuth, async (req: any, res) => {
+    try {
+      const uid = req.user.uid;
+
+      // Remove private secret
+      await db.collection("users").doc(uid).collection("secrets").doc("pluggy").delete();
+
+      // Limpa legados de users/{uid} apenas por segurança
+      await db.collection("users").doc(uid).update({
+        pluggyClientSecret: admin.firestore.FieldValue.delete(),
+        pluggyClientId: admin.firestore.FieldValue.delete()
+      }).catch(() => {});
+
+      res.json({ success: true, message: "Credenciais excluídas com sucesso." });
+    } catch (err: any) {
+      console.error("[Delete Credentials Error]:", err.message);
+      res.status(500).json({ error: err.message });
     }
   });
 

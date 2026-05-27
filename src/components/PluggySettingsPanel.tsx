@@ -170,11 +170,14 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
   const [localItemIds, setLocalItemIds] = useState<string[]>(profile.pluggyItemIds || []);
   
   // --- PLUGGY API CONNECT STATES ---
-  const [pluggyClientId, setPluggyClientId] = useState(profile.pluggyClientId || localStorage.getItem('PREF_PLUGGY_CLIENT_ID') || '');
-  const [pluggyClientSecret, setPluggyClientSecret] = useState((profile.pluggyClientSecret || localStorage.getItem('PREF_PLUGGY_CLIENT_SECRET')) ? '••••••••••••••••' : '');
+  const [pluggyClientId, setPluggyClientId] = useState('');
+  const [pluggyClientSecret, setPluggyClientSecret] = useState('');
   const [showClientSecret, setShowClientSecret] = useState(false);
-  const [storageMethod, setStorageMethod] = useState<'cloud' | 'local'>(localStorage.getItem('PREF_PLUGGY_CLIENT_SECRET') ? 'local' : 'cloud');
+  const [storageMethod, setStorageMethod] = useState<'cloud' | 'local'>('cloud');
   const [isSavingCustomKeys, setIsSavingCustomKeys] = useState(false);
+  const [isPluggyConfigured, setIsPluggyConfigured] = useState(false);
+  const [clientIdMasked, setClientIdMasked] = useState<string | null>(null);
+  const [usingGlobalCredentials, setUsingGlobalCredentials] = useState(false);
   const [isPluggyConfiguredOnServer, setIsPluggyConfiguredOnServer] = useState(false);
   const [manualItemIdInput, setManualItemIdInput] = useState('');
   const [showManualForm, setShowManualForm] = useState(false);
@@ -225,21 +228,17 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
     }
   }, [profile.pluggyItemIds]);
 
+  // --- LEGACY CLEANUP / MIGRATION ON MOUNT ---
+  useEffect(() => {
+    if (typeof localStorage !== 'undefined') {
+      if (localStorage.getItem('PREF_PLUGGY_CLIENT_SECRET')) {
+        console.log('[Migration] Purging legacy localstorage client secret key.');
+        localStorage.removeItem('PREF_PLUGGY_CLIENT_SECRET');
+      }
+    }
+  }, []);
+
   const getPluggyHeaders = async () => {
-    let cid = pluggyClientId;
-    let csec = pluggyClientSecret;
-
-    if (csec === '••••••••••••••••') {
-      csec = localStorage.getItem('PREF_PLUGGY_CLIENT_SECRET') || profile.pluggyClientSecret || '';
-    }
-
-    if (!cid) {
-      cid = localStorage.getItem('PREF_PLUGGY_CLIENT_ID') || profile.pluggyClientId || '';
-    }
-    if (!csec) {
-      csec = localStorage.getItem('PREF_PLUGGY_CLIENT_SECRET') || profile.pluggyClientSecret || '';
-    }
-
     const headers: Record<string, string> = {
       'Content-Type': 'application/json'
     };
@@ -253,27 +252,13 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
       console.warn('[Pluggy auth token] Failed to fetch Firebase ID token:', err);
     }
 
-    if (cid && cid.trim()) {
-      headers['x-pluggy-client-id'] = cid.trim();
-      headers['pluggyClientId'] = cid.trim();
-    }
-    if (csec && csec.trim()) {
-      headers['x-pluggy-client-secret'] = csec.trim();
-      headers['pluggyClientSecret'] = csec.trim();
-    }
-
     return headers;
   };
 
   const checkHasPluggyKeys = () => {
-    let cid = pluggyClientId || localStorage.getItem('PREF_PLUGGY_CLIENT_ID') || profile.pluggyClientId || '';
-    let csec = pluggyClientSecret || localStorage.getItem('PREF_PLUGGY_CLIENT_SECRET') || profile.pluggyClientSecret || '';
-    if (csec === '••••••••••••••••') {
-      csec = localStorage.getItem('PREF_PLUGGY_CLIENT_SECRET') || profile.pluggyClientSecret || '';
-    }
-    return !!(cid && csec);
+    return isPluggyConfigured;
   };
-  const hasPluggyKeys = isPluggyConfiguredOnServer || checkHasPluggyKeys();
+  const hasPluggyKeys = isPluggyConfigured;
 
   // Handle open credentials accordion smoothly
   const handleFocusCredentialsSetup = () => {
@@ -293,6 +278,29 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
     }, 2000);
   };
 
+  // --- DYNAMIC STATUS LOADING ---
+  const loadCredentialsStatus = async () => {
+    try {
+      const res = await fetch('/api/pluggy/credentials/status', {
+        headers: await getPluggyHeaders()
+      });
+      const data = await safeJsonClient(res);
+      if (data && data.configured) {
+        setIsPluggyConfigured(true);
+        setClientIdMasked(data.clientIdMasked);
+        setUsingGlobalCredentials(data.usingGlobalCredentials);
+        setIsPluggyConfiguredOnServer(true);
+      } else {
+        setIsPluggyConfigured(false);
+        setClientIdMasked(null);
+        setUsingGlobalCredentials(false);
+        setIsPluggyConfiguredOnServer(false);
+      }
+    } catch (err) {
+      console.error('Erro ao buscar status de credenciais:', err);
+    }
+  };
+
   // --- SAVE CUSTOM CREDENTIALS ---
   const handleSaveCustomKeys = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -307,37 +315,35 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
 
     setIsSavingCustomKeys(true);
     try {
-      let actualSecret = pluggyClientSecret;
-      if (pluggyClientSecret === '••••••••••••••••') {
-        actualSecret = localStorage.getItem('PREF_PLUGGY_CLIENT_SECRET') || profile.pluggyClientSecret || '';
+      const res = await fetch('/api/pluggy/credentials/save', {
+        method: 'POST',
+        headers: await getPluggyHeaders(),
+        body: JSON.stringify({
+          clientId: pluggyClientId.trim(),
+          clientSecret: pluggyClientSecret.trim()
+        })
+      });
+
+      const data = await safeJsonClient(res);
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao validar e salvar credenciais.');
       }
 
-      if (storageMethod === 'local') {
-        localStorage.setItem('PREF_PLUGGY_CLIENT_ID', pluggyClientId.trim());
-        localStorage.setItem('PREF_PLUGGY_CLIENT_SECRET', actualSecret.trim());
-        
-        await updateDoc(doc(db, 'users', user.uid), {
-          pluggyClientId: '',
-          pluggyClientSecret: '',
-          updatedAt: serverTimestamp()
-        });
-      } else {
-        await updateDoc(doc(db, 'users', user.uid), {
-          pluggyClientId: pluggyClientId.trim(),
-          pluggyClientSecret: actualSecret.trim(),
-          updatedAt: serverTimestamp()
-        });
+      // Limpar campos imediatamente
+      setPluggyClientId('');
+      setPluggyClientSecret('');
+      localStorage.removeItem('PREF_PLUGGY_CLIENT_ID');
+      localStorage.removeItem('PREF_PLUGGY_CLIENT_SECRET');
 
-        localStorage.removeItem('PREF_PLUGGY_CLIENT_ID');
-        localStorage.removeItem('PREF_PLUGGY_CLIENT_SECRET');
-      }
-
-      toast.success('Credenciais salvas com sucesso!');
+      toast.success('Credenciais salvas e ativadas com sucesso!');
       setIsCredentialsOpen(false);
+
+      // Atualiza o estado visual após salvar
+      await loadCredentialsStatus();
       await loadPluggyItems();
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      toast.error('Erro ao salvar as credenciais da Pluggy.');
+      toast.error(err.message || 'Erro ao salvar as credenciais da Pluggy.');
     } finally {
       setIsSavingCustomKeys(false);
     }
@@ -355,23 +361,31 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
         setConfirmModal(null);
         setIsSavingCustomKeys(true);
         try {
+          const res = await fetch('/api/pluggy/credentials/delete', {
+            method: 'DELETE',
+            headers: await getPluggyHeaders()
+          });
+
+          // Limpa legados de localStorage e banco por garantia
           localStorage.removeItem('PREF_PLUGGY_CLIENT_ID');
           localStorage.removeItem('PREF_PLUGGY_CLIENT_SECRET');
-          
+
           await updateDoc(doc(db, 'users', user.uid), {
             pluggyClientId: '',
             pluggyClientSecret: '',
             updatedAt: serverTimestamp()
-          });
+          }).catch(() => {});
 
           setPluggyClientId('');
           setPluggyClientSecret('');
           toast.success('Chaves de API removidas com sucesso.');
+          
+          await loadCredentialsStatus();
           setPluggyItems([]);
           setIsCredentialsOpen(false);
-        } catch (err) {
+        } catch (err: any) {
           console.error(err);
-          toast.error('Falha ao remover chaves.');
+          toast.error(err.message || 'Falha ao remover chaves.');
         } finally {
           setIsSavingCustomKeys(false);
         }
@@ -1544,27 +1558,27 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
             onToggle={() => setIsCredentialsOpen(!isCredentialsOpen)}
           >
             <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed font-sans mb-3">
-              Monitore se os pares de chaves estão salvos no servidor de back-end. Você pode optar por salvá-las na nuvem NoSQL ou no armazenamento local do seu navegador.
+              Suas credenciais privadas da Pluggy são armazenadas de maneira isolada e criptografada (Zero-Trust/Tenant-Isolation) no servidor de back-end. Elas nunca são trafegadas ou salvas no seu navegador.
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 border border-slate-100 dark:border-slate-800 p-4 rounded-xl bg-slate-50/30 dark:bg-black/10">
               <div className="space-y-1.5 text-xs font-mono">
                 <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-1.5 pt-1">
-                  <span className="text-slate-400">Chaves de produção:</span>
-                  <span className={`font-bold ${isPluggyConfiguredOnServer ? 'text-emerald-600' : 'text-slate-450'}`}>
-                    {isPluggyConfiguredOnServer ? 'Definidas (Servidor)' : 'Ausente'}
+                  <span className="text-slate-400">Status geral API:</span>
+                  <span className={`font-bold ${isPluggyConfigured ? 'text-emerald-600' : 'text-slate-450'}`}>
+                    {isPluggyConfigured ? 'Ativo' : 'Inativo'}
                   </span>
                 </div>
                 <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-1.5 pt-1">
-                  <span className="text-slate-400">Chaves do perfil:</span>
-                  <span className={`font-bold ${checkHasPluggyKeys() ? 'text-emerald-600' : 'text-amber-500'}`}>
-                    {checkHasPluggyKeys() ? 'Cadastradas' : 'Não cadastradas'}
+                  <span className="text-slate-400">Chaves do Usuário:</span>
+                  <span className={`font-bold ${isPluggyConfigured && !usingGlobalCredentials ? 'text-emerald-600' : 'text-amber-500'}`}>
+                    {isPluggyConfigured && !usingGlobalCredentials ? (clientIdMasked || 'Cadastradas') : 'Não cadastradas'}
                   </span>
                 </div>
                 <div className="flex items-center justify-between pt-1">
-                  <span className="text-slate-400">Gateway SDK base:</span>
+                  <span className="text-slate-400">Origem das Chaves:</span>
                   <span className="text-[10px] bg-slate-150 dark:bg-slate-800 px-1.5 py-0.5 rounded font-bold text-slate-600 dark:text-slate-300">
-                    Pluggy V2 API
+                    {isPluggyConfigured ? (usingGlobalCredentials ? 'Modo Global (Plataforma)' : 'Modo Seguro (Nuvem Firestore)') : 'Nenhum'}
                   </span>
                 </div>
               </div>
@@ -1573,7 +1587,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
                 <button
                   type="button"
                   onClick={handleTestPluggyKeys}
-                  disabled={isTestingPluggy || !hasPluggyKeys}
+                  disabled={isTestingPluggy || !isPluggyConfigured}
                   className="w-full h-10 px-4 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-45"
                 >
                   {isTestingPluggy ? <Loader2 className="w-4 h-4 animate-spin text-white" /> : <RefreshCw className="w-3.5 h-3.5" />}
@@ -1597,7 +1611,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
                     value={pluggyClientId}
                     onChange={(e) => setPluggyClientId(e.target.value)}
                     placeholder="Chave pública Pluggy Client"
-                    className="w-full h-10 bg-slate-50 dark:bg-black text-slate-850 dark:text-slate-100 border border-slate-200 dark:border-slate-705 border-slate-200 dark:border-slate-800 rounded-lg px-3 py-2 text-xs font-mono focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                    className="w-full h-10 bg-slate-50 dark:bg-black text-slate-850 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-2 text-xs font-mono focus:ring-1 focus:ring-emerald-500 focus:outline-none"
                     autoComplete="off"
                   />
                 </div>
@@ -1624,33 +1638,6 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
                 </div>
               </div>
 
-              {/* Persistência de chaves */}
-              <div className="bg-slate-50/50 dark:bg-slate-950 p-3 rounded-xl border border-slate-200 dark:border-slate-805 space-y-1.5">
-                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Local de salvamento das chaves</span>
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-1.5 text-xs text-slate-650 dark:text-slate-400 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="storeMethod"
-                      checked={storageMethod === 'cloud'}
-                      onChange={() => setStorageMethod('cloud')}
-                      className="text-emerald-600 focus:ring-emerald-500 shrink-0"
-                    />
-                    <span>Nuvem (Salvar no Firestore de forma protegida)</span>
-                  </label>
-                  <label className="flex items-center gap-1.5 text-xs text-slate-650 dark:text-slate-400 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="storeMethod"
-                      checked={storageMethod === 'local'}
-                      onChange={() => setStorageMethod('local')}
-                      className="text-emerald-600 focus:ring-emerald-500 shrink-0"
-                    />
-                    <span>Local (Salvar somente no seu navegador)</span>
-                  </label>
-                </div>
-              </div>
-
               <div className="flex flex-col sm:flex-row gap-3 pt-1">
                 <button
                   type="submit"
@@ -1661,7 +1648,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
                   <span>Salvar chaves cadastrais</span>
                 </button>
 
-                {(profile.pluggyClientId || localStorage.getItem('PREF_PLUGGY_CLIENT_ID')) && (
+                {isPluggyConfigured && !usingGlobalCredentials && (
                   <button
                     type="button"
                     onClick={handleRemoveCustomKeys}

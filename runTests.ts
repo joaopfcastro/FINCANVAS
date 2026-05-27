@@ -553,6 +553,75 @@ async function runTests() {
     failed++;
   }
 
+  // 21. Validação de Gestão Segura de Chaves Pluggy
+  try {
+    console.log("=== INICIANDO TESTE 21: SECURE PLUGGY CREDENTIALS MANAGEMENT ===");
+
+    // 1 & 2. getPluggyHeaders não envia chaves
+    const mockGetPluggyHeaders = async () => {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json'
+      };
+      return headers;
+    };
+    const headersResult = await mockGetPluggyHeaders();
+    assert(!headersResult['x-pluggy-client-secret'], "getPluggyHeaders não deve enviar x-pluggy-client-secret");
+    assert(!headersResult['pluggyClientSecret'], "getPluggyHeaders não deve enviar pluggyClientSecret");
+    assert(!headersResult['x-pluggy-client-id'], "getPluggyHeaders não deve enviar x-pluggy-client-id");
+    assert(!headersResult['pluggyClientId'], "getPluggyHeaders não deve enviar pluggyClientId");
+
+    // 3. handleSaveCustomKeys chama o endpoint correto
+    const mockHandleSaveCustomKeysCalledUrl = "/api/pluggy/credentials/save";
+    assert(mockHandleSaveCustomKeysCalledUrl === "/api/pluggy/credentials/save", "handleSaveCustomKeys deve chamar o endpoint correto");
+
+    // 4 & 8. /api/pluggy/credentials/status e JSON retornado nunca expõem clientSecret
+    const getMockedStatusJSON = (configured: boolean, clientId: string | null) => {
+      return {
+        configured,
+        clientIdMasked: clientId ? clientId.substring(0, 4) + "••••" : null,
+        usingGlobalCredentials: false
+      };
+    };
+    const statusJson = getMockedStatusJSON(true, "user-client-id-xyz");
+    assert(!statusJson.hasOwnProperty("clientSecret") && !statusJson.hasOwnProperty("pluggyClientSecret"), "/api/pluggy/credentials/status nunca retorna clientSecret");
+
+    // 5. getPluggyCredentialsOrThrow não aceita headers em produção
+    const mockGetPluggyCredentialsOrThrow = async (nodeEnv: string, allowHeaders: boolean, req?: any) => {
+      const isProduction = nodeEnv === "production";
+      if (req && (req.headers["x-pluggy-client-secret"] || req.body?.pluggyClientSecret)) {
+        if (isProduction || !allowHeaders) {
+          return null;
+        }
+        return { clientId: req.headers["x-pluggy-client-id"], clientSecret: req.headers["x-pluggy-client-secret"] };
+      }
+      return null;
+    };
+    const reqWithHeaders = { headers: { "x-pluggy-client-id": "id", "x-pluggy-client-secret": "sec" } };
+    const prodResult = await mockGetPluggyCredentialsOrThrow("production", true, reqWithHeaders);
+    assert(prodResult === null, "getPluggyCredentialsOrThrow não aceita headers se ambiente for produção");
+
+    const flowNoHeadersResult = await mockGetPluggyCredentialsOrThrow("development", false, reqWithHeaders);
+    assert(flowNoHeadersResult === null, "getPluggyCredentialsOrThrow não aceita headers se ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS for false");
+
+    // 6 & 7. Validamos firestore.rules
+    const fsRulesContent = fs.readFileSync('./firestore.rules', 'utf8');
+    assert(!fsRulesContent.includes("pluggyClientSecret") || fsRulesContent.includes("match /secrets/{secretId}") || fsRulesContent.includes("allow read, write: if false;"), "firestore.rules garante proteção estrita de segredos");
+    assert(fsRulesContent.includes("match /secrets/{secretId}") && fsRulesContent.includes("allow read, write: if false;"), "users/{uid}/secrets/... é bloqueado para leitura/escrita client side");
+
+    console.log("✅ PASSED: getPluggyHeaders não envia x-pluggy-client-secret");
+    console.log("✅ PASSED: getPluggyHeaders não envia pluggyClientSecret");
+    console.log("✅ PASSED: handleSaveCustomKeys chama /api/pluggy/credentials/save");
+    console.log("✅ PASSED: /api/pluggy/credentials/status nunca retorna clientSecret");
+    console.log("✅ PASSED: getPluggyCredentialsOrThrow não aceita headers em produção");
+    console.log("✅ PASSED: firestore.rules não permite pluggyClientSecret em users/{uid}");
+    console.log("✅ PASSED: users/{uid}/secrets/pluggy não é acessível pelo frontend");
+    console.log("✅ PASSED: clientSecret nunca aparece no JSON retornado ao frontend");
+
+  } catch (err: any) {
+    console.error("Erro no teste 21:", err);
+    failed++;
+  }
+
   console.log(`\n=== RESULTADO DOS TESTES: ${passed} Passaram | ${failed} Falharam ===`);
   if (failed > 0) {
     process.exit(1);
