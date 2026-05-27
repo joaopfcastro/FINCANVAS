@@ -92,28 +92,19 @@ function getPromptText(contents: any): string {
   }
   return "";
 }
-
 // Generate highly realistic smart mockup response matching UI expectations on API failure
-function getSimulatedGeminiResponse(model: string, contents: any, config: any): { text: string; [key: string]: any } {
+export function getSimulatedGeminiResponse(model: string, contents: any, config: any): { text: string; [key: string]: any } {
+  const ENABLE_SIMULATED_AI_FALLBACK = process.env.ENABLE_SIMULATED_AI_FALLBACK === "true";
+  const IS_PRODUCTION = process.env.NODE_ENV === "production";
+
+  if (IS_PRODUCTION || !ENABLE_SIMULATED_AI_FALLBACK) {
+    console.log("Gemini unavailable and simulated fallback disabled");
+    throw new Error("Simulated fallback is disabled");
+  }
+
+  console.log("Simulated Gemini fallback enabled for development only");
   const promptText = getPromptText(contents);
   const promptLower = promptText.toLowerCase();
-
-  console.log(`[Contingency Protocol] Generating simulated AI content for prompt: "${promptText.substring(0, 100)}..."`);
-
-  // Detect query categories from the prompt to make classification look extremely cohesive
-  let userCategories = [
-    "Alimentação", "Transporte", "Lazer", "Saúde", 
-    "Educação", "Moradia", "Salário", "Investimentos",
-    "Compras Online", "Assinaturas", "Outros"
-  ];
-  const catMatch = promptText.match(/cadastradas do usuário:?\s*(\[.*?\])/i) || promptText.match(/lista de categorias cadastradas do usuário:?\s*(\[.*?\])/i);
-  if (catMatch) {
-    try {
-      userCategories = JSON.parse(catMatch[1]);
-    } catch (e) {
-      // Keep default userCategories
-    }
-  }
 
   // 1. Bulk Transaction Import Extraction (e.g., CSV imports, statements)
   const isArraySchema = config?.responseSchema?.type === "ARRAY" || config?.responseSchema?.type === "Type.ARRAY" || promptLower.includes("extrato") || promptLower.includes("transações financeiras");
@@ -132,7 +123,6 @@ function getSimulatedGeminiResponse(model: string, contents: any, config: any): 
       {
         date: formatDate(0),
         desc: "iFood (Restaurante Almoço)",
-        cat: userCategories.includes("Alimentação") ? "Alimentação" : userCategories[0],
         type: "Despesa",
         amount: -54.90,
         source: "Nubank"
@@ -140,7 +130,6 @@ function getSimulatedGeminiResponse(model: string, contents: any, config: any): 
       {
         date: formatDate(0),
         desc: "Supermercado Pão de Açúcar",
-        cat: userCategories.includes("Alimentação") ? "Alimentação" : userCategories[0],
         type: "Despesa",
         amount: -186.20,
         source: "Itaú"
@@ -148,7 +137,6 @@ function getSimulatedGeminiResponse(model: string, contents: any, config: any): 
       {
         date: formatDate(1),
         desc: "Uber Trip",
-        cat: userCategories.includes("Transporte") ? "Transporte" : (userCategories[1] || userCategories[0]),
         type: "Despesa",
         amount: -21.50,
         source: "Nubank"
@@ -156,7 +144,6 @@ function getSimulatedGeminiResponse(model: string, contents: any, config: any): 
       {
         date: formatDate(1),
         desc: "Mercado Livre",
-        cat: userCategories.includes("Compras Online") ? "Compras Online" : (userCategories[4] || userCategories[0]),
         type: "Despesa",
         amount: -129.90,
         source: "Cartão de Crédito"
@@ -164,7 +151,6 @@ function getSimulatedGeminiResponse(model: string, contents: any, config: any): 
       {
         date: formatDate(2),
         desc: "Transferência Recebida Pix",
-        cat: userCategories.includes("Salário") ? "Salário" : "Salário / Receitas",
         type: "Receita",
         amount: 3500.00,
         source: "Banco do Brasil"
@@ -172,7 +158,6 @@ function getSimulatedGeminiResponse(model: string, contents: any, config: any): 
       {
         date: formatDate(3),
         desc: "Netflix Mensalidade",
-        cat: userCategories.includes("Assinaturas") ? "Assinaturas" : (userCategories[5] || userCategories[0]),
         type: "Despesa",
         amount: -55.90,
         source: "Nubank"
@@ -191,11 +176,12 @@ function getSimulatedGeminiResponse(model: string, contents: any, config: any): 
     const todayStr = new Date().toLocaleDateString('pt-BR');
     const responseObj = {
       desc: "Lojas Americanas",
-      amount: "64,90",
+      amount: -64.90,
       date: todayStr,
       type: "Despesa",
-      cat: userCategories.includes("Compras Online") ? "Compras Online" : (userCategories.includes("Alimentação") ? "Alimentação" : userCategories[0]),
-      source: "Nubank"
+      source: "Nubank",
+      merchantName: "Lojas Americanas",
+      cnpj: "00.776.574/0001-56"
     };
 
     const jsonText = JSON.stringify(responseObj, null, 2);
@@ -214,52 +200,39 @@ function getSimulatedGeminiResponse(model: string, contents: any, config: any): 
     }
 
     const dl = description.toLowerCase();
-    let category = "Alimentação";
     let cleanDesc = description;
     let source = "Pix";
 
     if (dl.includes("uber") || dl.includes("99app") || dl.includes("cabify") || dl.includes("indrive")) {
-      category = userCategories.includes("Transporte") ? "Transporte" : userCategories[1];
       cleanDesc = "Uber/Transporte";
       source = "Cartão de Crédito";
     } else if (dl.includes("ifood") || dl.includes("mcdonald") || dl.includes("burger") || dl.includes("bk") || dl.includes("habibs") || dl.includes("restaurante") || dl.includes("pizzaria") || dl.includes("padaria") || dl.includes("sushi")) {
-      category = userCategories.includes("Alimentação") ? "Alimentação" : userCategories[0];
       cleanDesc = dl.includes("ifood") ? "iFood" : (dl.includes("mcdonald") ? "McDonald's" : "Restaurante/Alimentação");
       source = "Pix";
     } else if (dl.includes("posto") || dl.includes("combustivel") || dl.includes("petrobras") || dl.includes("ipiranga") || dl.includes("shell") || dl.includes("combustível")) {
-      category = userCategories.includes("Transporte") ? "Transporte" : userCategories[1];
       cleanDesc = "Posto de Combustível";
       source = "Cartão";
     } else if (dl.includes("mercado") || dl.includes("carrefour") || dl.includes("extra") || dl.includes("pao de acucar") || dl.includes("pão de açúcar") || dl.includes("supermercado")) {
-      category = userCategories.includes("Alimentação") ? "Alimentação" : userCategories[0];
       cleanDesc = "Supermercado";
       source = "Débito";
     } else if (dl.includes("amazon") || dl.includes("shopee") || dl.includes("mercado livre") || dl.includes("aliexpress") || dl.includes("magalu")) {
-      category = userCategories.includes("Compras Online") ? "Compras Online" : userCategories[8] || userCategories[0];
       cleanDesc = dl.includes("amazon") ? "Amazon" : (dl.includes("shopee") ? "Shopee" : "Mercado Livre");
       source = "Cartão de Crédito";
     } else if (dl.includes("netflix") || dl.includes("spotify") || dl.includes("youtube") || dl.includes("prime video") || dl.includes("disney") || dl.includes("hbo")) {
-      category = userCategories.includes("Assinaturas") ? "Assinaturas" : userCategories[9] || userCategories[0];
       cleanDesc = dl.includes("netflix") ? "Netflix" : (dl.includes("spotify") ? "Spotify" : "Assinatura Digital");
       source = "Crédito Recorrente";
     } else if (dl.includes("salario") || dl.includes("salário") || dl.includes("pagamento") || dl.includes("recebimento") || dl.includes("trabalho")) {
-      category = userCategories.includes("Salário") ? "Salário" : "Salário";
       cleanDesc = "Salário Mensal";
       source = "TED / PIX";
     } else if (dl.includes("investimento") || dl.includes("ações") || dl.includes("cdb") || dl.includes("poupança") || dl.includes("rendimento")) {
-      category = userCategories.includes("Investimentos") ? "Investimentos" : userCategories[7];
       cleanDesc = "Rentabilidade / Aplicação";
       source = "Corretora";
     } else {
-      // Find the closest category
       const cleanedInputDesc = description.trim();
       cleanDesc = cleanedInputDesc.charAt(0).toUpperCase() + cleanedInputDesc.slice(1);
-      category = userCategories[0];
     }
 
     const responseObj = {
-      category: category,
-      category_chosen: category, // support alternate field maps
       cleanDescription: cleanDesc,
       source: source
     };
@@ -275,16 +248,16 @@ function getSimulatedGeminiResponse(model: string, contents: any, config: any): 
   if (promptLower.includes("despesa maior:")) {
     let despesaName = "sua despesa maior";
     let despesaAmount = "";
-    let despesaCat = "";
+    let despesaGroupSymbol = "";
     const nameMatch = promptText.match(/Despesa Maior:\s*([^(]+)/i);
     const catMatch = promptText.match(/\(([^)]+)\)/i);
     const valMatch = promptText.match(/valor de R\$\s*([\d.,]+)/i);
 
     if (nameMatch) despesaName = nameMatch[1].trim();
-    if (catMatch) despesaCat = catMatch[1].trim();
+    if (catMatch) despesaGroupSymbol = catMatch[1].trim();
     if (valMatch) despesaAmount = "de R$ " + valMatch[1].trim();
 
-    const adviceText = `Sua despesa com **${despesaName}** ${despesaCat ? `na categoria (${despesaCat})` : ''} ${despesaAmount} é relevante. Para essa área de gastos, sugerimos monitorar a frequência ou definir limites semanais em cartões pré-pagos e preferir compras à vista com desconto para mitigar o impacto total de parcelas.`;
+    const adviceText = `Sua despesa com **${despesaName}** ${despesaGroupSymbol ? `na categoria (${despesaGroupSymbol})` : ''} ${despesaAmount} é relevante. Para essa área de gastos, sugerimos monitorar a frequência ou definir limites semanais em cartões pré-pagos e preferir compras à vista com desconto para mitigar o impacto total de parcelas.`;
 
     return {
       text: adviceText,
@@ -301,7 +274,7 @@ Análise profunda de saúde financeira e comportamento orçamentário.
 ### 1. Análise Crítica do Comportamento
 Seus dados de transações apontam para um bom patamar de estabilidade, com receitas recorrentes que sustentam o orçamento básico. No entanto, há um desvio substancial de pequenos valores não catalogados que, quando agregados, reduzem severamente a sua capacidade real de poupança no fechamento do período.
 
-### 2. Alerta de Categorias Críticas
+### 2. Alerta de Áreas Críticas
 * **Alimentação & Entregas**: Seus gastos com restaurantes e entregas rápidas estão acima dos limites orçamentários recomendados (geralmente fixados em até 15% do ganho líquido).
 * **Compras Online**: Compras recorrentes de conveniência em e-commerce representam uma drenagem passiva sobre suas reservas.
 * **Custos Fixos / Assinaturas**: Verifique se todos os canais recorrentes em débito automático estão sendo realmente aproveitados.
@@ -327,7 +300,7 @@ Seus dados de transações apontam para um bom patamar de estabilidade, com rece
   if (promptLower.includes("analise financeiramente")) {
     const analysisText = `**O que está indo muito bem:** Observamos ótima consistência e estabilidade no faturamento recorrente. Suas receitas essenciais estão pavimentando uma base firme, mantendo as principais contas vitais estruturadas sob bom controle.
 
-**Ponto de Atenção Recente:** Cuidado com o acúmulo de pequenas compras que drenam o caixa de forma invisível. Gastos pontuais não planejados de **Alimentação** ou lazer somam somas expressivas quando agrupados semanalmente.
+**Ponto de Atenção Recente:** Cuidado com o acúmulo de pequenas compras que drenam o caixa de forma invisível. Gastos pontuais não planejados somam somas expressivas quando agrupados semanalmente.
 
 **Dica Financeira Prática:** Aplique a distribuição 50-30-20. Reserve rigorosamente 50% dos seus rendimentos líquidos para despesas vitais estruturais, limite a 30% seus desejos e estilo de vida variáveis, e envie os 20% restantes diretamente para sua carteira de investimentos.`;
 
@@ -1137,11 +1110,22 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       return res.status(400).json({ error: "Missing required model or contents parameters." });
     }
 
+    const ENABLE_SIMULATED_AI_FALLBACK = process.env.ENABLE_SIMULATED_AI_FALLBACK === "true";
+    const IS_PRODUCTION = process.env.NODE_ENV === "production";
+
     try {
       const ai = getAiClient();
       if (!ai) {
-        // Fall back automatically if no API Key is configured in the workspace environments
-        console.warn("[AIS DEV fallback] No GEMINI_API_KEY environment variable. Serving simulated fallback data.");
+        if (IS_PRODUCTION) {
+          console.error("Gemini unavailable and simulated fallback disabled in production");
+          return res.status(500).json({ error: "A inteligência artificial está temporariamente indisponível." });
+        }
+        if (!ENABLE_SIMULATED_AI_FALLBACK) {
+          console.warn("Gemini unavailable and simulated fallback disabled");
+          return res.status(500).json({ error: "A inteligência artificial está desabilitada no ambiente local." });
+        }
+
+        console.log("Simulated Gemini fallback enabled for development only");
         const fallback = getSimulatedGeminiResponse(model, contents, config);
         return res.json({
           text: fallback.text,
@@ -1163,8 +1147,6 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       console.error("Erro na API Gemini (Backend):", error);
       
       const errorMsg = String(error.message || error);
-      // If the API returns RESOURCE_EXHAUSTED (monthly spend cap reached / rate limits) or any authentication issue,
-      // trigger safe, elegant mock fallback responses so the application keeps working correctly.
       if (
         errorMsg.includes("RESOURCE_EXHAUSTED") ||
         errorMsg.includes("429") ||
@@ -1174,7 +1156,16 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         errorMsg.includes("key") ||
         errorMsg.includes("APIError")
       ) {
-        console.warn("[AIS DEV fallback] Quota exceeded or API Key invalid. Serving robust smart simulated data as fallback.");
+        if (IS_PRODUCTION) {
+          console.error("Gemini unavailable and simulated fallback disabled in production");
+          return res.status(500).json({ error: "Limite de cota excedido ou autenticação inválida." });
+        }
+        if (!ENABLE_SIMULATED_AI_FALLBACK) {
+          console.warn("Gemini unavailable and simulated fallback disabled");
+          return res.status(500).json({ error: "Limite de cota e o simulador está desativado." });
+        }
+
+        console.log("Simulated Gemini fallback enabled for development only");
         const fallback = getSimulatedGeminiResponse(model, contents, config);
         return res.json({
           text: fallback.text,
@@ -1215,6 +1206,14 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
   });
 }
 
-startServer().catch((err) => {
-  console.error("Failed to start server:", err);
-});
+const isMainFile = () => {
+  if (!process.argv[1]) return false;
+  const mainPath = process.argv[1].replace(/\\/g, '/');
+  return mainPath.endsWith("server.ts") || mainPath.endsWith("server.js") || mainPath.endsWith("server.cjs");
+};
+
+if (isMainFile()) {
+  startServer().catch((err) => {
+    console.error("Failed to start server:", err);
+  });
+}

@@ -3,6 +3,7 @@ import { runLocalRecognition } from './src/lib/recognition/engine/recognitionEng
 import { mapMccToCategory } from './src/lib/recognition/taxonomy/mccCategoryMapper.js';
 import { ACCEPT_WITH_BADGE } from './src/lib/recognition/constants.js';
 import { mapToUserCategory } from './src/lib/recognition/taxonomy/mapToUserCategory.js';
+import { getSimulatedGeminiResponse } from './server.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -363,6 +364,78 @@ async function runTests() {
     assert(finalCat === "Alimentação", "Categoria da IA deve ser mantida");
   } catch (err: any) {
     console.error("Erro no teste 17:", err);
+    failed++;
+  }
+
+  // 18. Simulação AI Fallback controls & security tests
+  try {
+    console.log("=== INICIANDO TESTE 18: SIMULADOR AI FALLBACK E SEGURANÇA ===");
+
+    const mockContents = { text: "imagem de transação nota fiscal" };
+    const mockConfig = {};
+
+    // A. Blocos em produção
+    process.env.NODE_ENV = "production";
+    process.env.ENABLE_SIMULATED_AI_FALLBACK = "true";
+    let prodBlocked = false;
+    try {
+      getSimulatedGeminiResponse("gemini-3.5-flash", mockContents, mockConfig);
+    } catch (e: any) {
+      if (e.message.includes("Simulated fallback is disabled")) {
+        prodBlocked = true;
+      }
+    }
+    assert(prodBlocked === true, "getSimulatedGeminiResponse deve ser severamente bloqueado em ambiente de produção");
+
+    // B. Bloqueado em desenvolvimento se o flag for diferente de "true"
+    process.env.NODE_ENV = "development";
+    process.env.ENABLE_SIMULATED_AI_FALLBACK = "false";
+    let flagBlocked = false;
+    try {
+      getSimulatedGeminiResponse("gemini-3.5-flash", mockContents, mockConfig);
+    } catch (e: any) {
+      if (e.message.includes("Simulated fallback is disabled")) {
+        flagBlocked = true;
+      }
+    }
+    assert(flagBlocked === true, "getSimulatedGeminiResponse deve ser bloqueado quando ENABLE_SIMULATED_AI_FALLBACK não é 'true'");
+
+    // C. Deve funcionar se NODE_ENV = development e ENABLE_SIMULATED_AI_FALLBACK = "true"
+    process.env.NODE_ENV = "development";
+    process.env.ENABLE_SIMULATED_AI_FALLBACK = "true";
+    const resSim = getSimulatedGeminiResponse("gemini-3.5-flash", mockContents, mockConfig);
+    assert(typeof resSim === "object" && typeof resSim.text === "string", "getSimulatedGeminiResponse deve gerar resposta simulada em desenvolvimento quando o flag é habilitado");
+
+    const parsedData = JSON.parse(resSim.text);
+    
+    // D. Não deve conter chaves como cat, category, categoria, suggestedCategory, category_chosen no retorno
+    const keys = Object.keys(parsedData);
+    const hasCategoryFields = keys.some(k => ["cat", "category", "categoria", "suggestedCategory", "category_chosen"].includes(k));
+    assert(hasCategoryFields === false, "Nenhum retorno simulado deve possuir cat/category/categoria/suggestedCategory etc.");
+
+    // E. Deve possuir dados factuais de extração (desc, amount, date, type, source, merchantName, cnpj)
+    assert("desc" in parsedData, "A extração simulada deve conter o campo factual description/desc");
+    assert("amount" in parsedData, "A extração simulada deve conter o campo factual amount");
+    assert("date" in parsedData, "A extração simulada deve conter o campo factual date");
+    assert("type" in parsedData, "A extração simulada deve conter o campo factual type");
+
+    // F. Fluxo de categorização local após a extração factual
+    const userCategories = ["Lazer", "Alimentação", "Compras Online"];
+    const localInput = {
+      description: parsedData.desc, // "Lojas Americanas"
+      amount: parsedData.amount, // -64.90
+      detectedDirection: parsedData.type as 'Despesa' | 'Receita', // "Despesa"
+      source: parsedData.source, // "Nubank"
+      cnpj: parsedData.cnpj, // "00.776.574/0001-56"
+      merchant: parsedData.merchantName // "Lojas Americanas"
+    };
+
+    const finalRecognized = runLocalRecognition(localInput, [], [], userCategories);
+    assert(finalRecognized !== null, "O motor de reconhecimento local deve processar os dados factuais extraídos");
+    assert(finalRecognized.category === "Compras Online", "A categoria final deve vir do motor local determinístico (ex: Lojas Americanas => Compras Online)");
+
+  } catch (err: any) {
+    console.error("Erro no teste 18:", err);
     failed++;
   }
 
