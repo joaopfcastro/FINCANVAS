@@ -95,6 +95,15 @@ export const DashboardView = React.memo(function DashboardView({
   const [modalFilterAmount, setModalFilterAmount] = useState('');
   
   const [showModalFiltersMobile, setShowModalFiltersMobile] = useState(false);
+  const [showAddManualForm, setShowAddManualForm] = useState(false);
+  const [manualAccountForm, setManualAccountForm] = useState({
+    bankName: '',
+    accountLabel: '',
+    accountType: 'BANK',
+    balance: '',
+    number: '',
+  });
+  const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
   const [dragY, setDragY] = useState(0);
   const startYRef = useRef(0);
 
@@ -128,7 +137,106 @@ export const DashboardView = React.memo(function DashboardView({
     setModalFilterAmountType('');
     setModalFilterAmount('');
     setShowModalFiltersMobile(false);
+    setShowAddManualForm(false);
+    setEditingAccountId(null);
+    setManualAccountForm({
+      bankName: '',
+      accountLabel: '',
+      accountType: 'BANK',
+      balance: '',
+      number: '',
+    });
     setTimeout(() => setDragY(0), 300);
+  };
+
+  const handleSaveManualAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualAccountForm.bankName || !manualAccountForm.accountLabel || manualAccountForm.balance === '') {
+      toast.error('Por favor, preencha todos os campos obrigatórios (Instituição, Descrição e Saldo).');
+      return;
+    }
+
+    const valueBalance = parseFloat(manualAccountForm.balance);
+    if (isNaN(valueBalance)) {
+      toast.error('O saldo deve ser um valor numérico válido.');
+      return;
+    }
+
+    try {
+      if (editingAccountId) {
+        // Edit manual account
+        const docRef = doc(db, 'accountBalances', editingAccountId);
+        await updateDoc(docRef, {
+          bankName: manualAccountForm.bankName.trim(),
+          accountLabel: manualAccountForm.accountLabel.trim(),
+          accountName: manualAccountForm.accountLabel.trim(),
+          accountType: manualAccountForm.accountType,
+          number: manualAccountForm.number.trim() || '',
+          balance: valueBalance,
+          updatedAt: serverTimestamp()
+        });
+        toast.success('Conta manual atualizada com sucesso!');
+      } else {
+        // Create new manual account
+        const manualId = 'manual_' + Math.random().toString(36).substring(2, 15);
+        const colRef = collection(db, 'accountBalances');
+        await addDoc(colRef, {
+          userId: auth.currentUser?.uid || '',
+          provider: 'manual',
+          accountId: manualId,
+          bankName: manualAccountForm.bankName.trim(),
+          accountName: manualAccountForm.accountLabel.trim(),
+          accountLabel: manualAccountForm.accountLabel.trim(),
+          accountType: manualAccountForm.accountType,
+          number: manualAccountForm.number.trim() || '',
+          balance: valueBalance,
+          includeInSaldoTotal: true,
+          includeReason: 'Conta manual',
+          status: 'ACTIVE',
+          lastSyncedAt: serverTimestamp(),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+        toast.success('Conta manual adicionada com sucesso!');
+      }
+
+      // Reset form
+      setManualAccountForm({
+        bankName: '',
+        accountLabel: '',
+        accountType: 'BANK',
+        balance: '',
+        number: '',
+      });
+      setShowAddManualForm(false);
+      setEditingAccountId(null);
+    } catch (err: any) {
+      console.error(err);
+      toast.error('Erro ao salvar conta manual: ' + err.message);
+    }
+  };
+
+  const handleDeleteManualAccount = async (accId: string) => {
+    try {
+      const docRef = doc(db, 'accountBalances', accId);
+      await deleteDoc(docRef);
+      toast.success('Conta manual excluída com sucesso!');
+    } catch (err: any) {
+      console.error(err);
+      toast.error('Erro ao excluir conta manual: ' + err.message);
+    }
+  };
+
+  const handleStartEditManual = (acc: AccountBalance) => {
+    setEditingAccountId(acc.id || null);
+    setManualAccountForm({
+      bankName: acc.bankName,
+      accountLabel: acc.accountLabel,
+      accountType: acc.accountType,
+      balance: acc.balance.toString(),
+      number: acc.number || '',
+    });
+    setShowAddManualForm(true);
   };
 
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -265,13 +373,6 @@ export const DashboardView = React.memo(function DashboardView({
         if (acc.includeInSaldoTotal) {
           overallBalance += acc.balance;
         }
-      });
-    } else {
-      transactions.forEach(t => {
-        const val = t.type === 'Receita' ? t.amount : -Math.abs(t.amount);
-        overallBalance += val;
-        const src = t.source || 'Desconhecida';
-        sourceMap[src] = (sourceMap[src] || 0) + val;
       });
     }
 
@@ -560,20 +661,17 @@ export const DashboardView = React.memo(function DashboardView({
   }, [accountBalances, modalSearchTerm]);
 
   const modalStats = useMemo(() => {
-    if (modalType !== 'saldo-total') return { counts: 0, total: 0, average: 0 };
+    if (modalType !== 'saldo-total') return { counts: 0, total: 0, average: 0, pluggyCount: 0, manualCount: 0 };
     
-    if (accountBalances && accountBalances.length > 0) {
-      const counts = filteredAccountBalances.length;
-      const total = filteredAccountBalances.filter(acc => acc.includeInSaldoTotal).reduce((sum, b) => sum + b.balance, 0);
-      const average = counts > 0 ? total / counts : 0;
-      return { counts, total, average };
-    } else {
-      const counts = Object.keys(filteredBalancesBySource).length;
-      const total = (Object.values(filteredBalancesBySource) as number[]).reduce((acc, v) => acc + v, 0);
-      const average = counts > 0 ? total / counts : 0;
-      return { counts, total, average };
-    }
-  }, [modalType, accountBalances, filteredAccountBalances, filteredBalancesBySource]);
+    const counts = filteredAccountBalances.length;
+    const total = filteredAccountBalances.filter(acc => acc.includeInSaldoTotal).reduce((sum, b) => sum + b.balance, 0);
+    const average = counts > 0 ? total / counts : 0;
+    
+    const pluggyCount = filteredAccountBalances.filter(acc => acc.provider === 'pluggy').length;
+    const manualCount = filteredAccountBalances.filter(acc => acc.provider === 'manual').length;
+    
+    return { counts, total, average, pluggyCount, manualCount };
+  }, [modalType, filteredAccountBalances]);
 
   const handleToggleIncludeInTotal = async (accId: string, currentValue: boolean) => {
     try {
@@ -953,45 +1051,68 @@ export const DashboardView = React.memo(function DashboardView({
 
             {/* Quick Stats Grid */}
             {modalType !== 'insight' && (
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
-                <div className="bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 flex flex-col justify-center">
-                <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">
-                  <span className="sm:hidden">Movimentações</span>
-                  <span className="hidden sm:inline">Volume</span>
-                </span>
-                <span className="text-base sm:text-lg font-black text-slate-800 leading-none">
-                  {modalType === 'saldo-total' ? modalStats.counts : filteredModalData.length}
-                </span>
-                <span className="text-[9px] text-slate-400 block mt-1 font-bold">
-                  {modalType === 'saldo-total' ? 'Contas' : 'Itens'}
-                </span>
-              </div>
-              <div className="bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 col-span-1 md:col-span-2 flex flex-col justify-center">
-                <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Total</span>
-                <span className={`text-base sm:text-lg font-black leading-none ${
-                  modalType === 'receitas' ? 'text-emerald-600' :
-                  modalType === 'despesas' ? 'text-rose-600' :
-                  modalType === 'saldo-total' ? (modalStats.total >= 0 ? 'text-emerald-600' : 'text-rose-600') :
-                  'text-slate-800'
-                }`}>
-                  {formatMoeda(
-                    modalType === 'saldo-total' ? modalStats.total :
-                    filteredModalData.reduce((acc, t) => acc + (modalType === 'saldo' ? (t.type === 'Receita' ? t.amount : -Math.abs(t.amount)) : Math.abs(t.amount)), 0)
-                  )}
-                </span>
-                <span className="text-[9px] text-slate-400 block mt-1 font-bold">Consolidado</span>
-              </div>
-              <div className="hidden md:flex bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 flex-col justify-center">
-                <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Média</span>
-                <span className="text-base sm:text-lg font-black text-slate-800 leading-none">
-                  {formatMoeda(
-                    modalType === 'saldo-total' ? modalStats.average :
-                    (filteredModalData.length > 0 ? filteredModalData.reduce((acc, t) => acc + Math.abs(t.amount), 0) / filteredModalData.length : 0)
-                  )}
-                </span>
-                <span className="text-[9px] text-slate-400 block mt-1 font-bold">Por conta / item</span>
-              </div>
-            </div>
+              modalType === 'saldo-total' ? (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+                  <div className="bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 flex flex-col justify-center">
+                    <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Ativas</span>
+                    <span className="text-base sm:text-lg font-black text-slate-800 leading-none">
+                      {filteredAccountBalances.filter(a => a.includeInSaldoTotal).length}
+                    </span>
+                    <span className="text-[9px] text-slate-300 block mt-1 font-bold">Incluídas</span>
+                  </div>
+                  <div className="bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 col-span-1 md:col-span-2 flex flex-col justify-center">
+                    <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Saldo Disponível</span>
+                    <span className={`text-base sm:text-lg font-black leading-none ${modalStats.total >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                      {formatMoeda(modalStats.total)}
+                    </span>
+                    <span className="text-[9px] text-slate-400 block mt-1 font-bold">Patrimônio Líquido</span>
+                  </div>
+                  <div className="hidden md:flex bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 flex flex-col justify-center">
+                    <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Origens</span>
+                    <span className="text-base sm:text-lg font-black text-slate-800 leading-none">
+                      {modalStats.pluggyCount + modalStats.manualCount}
+                    </span>
+                    <span className="text-[9px] text-slate-400 block mt-1 font-bold">
+                      {modalStats.pluggyCount} Sinc / {modalStats.manualCount} Man
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+                  <div className="bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 flex flex-col justify-center">
+                    <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">
+                      <span className="sm:hidden">Movimentações</span>
+                      <span className="hidden sm:inline">Volume</span>
+                    </span>
+                    <span className="text-base sm:text-lg font-black text-slate-800 leading-none">
+                      {filteredModalData.length}
+                    </span>
+                    <span className="text-[9px] text-slate-400 block mt-1 font-bold">Itens</span>
+                  </div>
+                  <div className="bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 col-span-1 md:col-span-2 flex flex-col justify-center">
+                    <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Total</span>
+                    <span className={`text-base sm:text-lg font-black leading-none ${
+                      modalType === 'receitas' ? 'text-emerald-600' :
+                      modalType === 'despesas' ? 'text-rose-600' :
+                      'text-slate-800'
+                    }`}>
+                      {formatMoeda(
+                        filteredModalData.reduce((acc, t) => acc + (modalType === 'saldo' ? (t.type === 'Receita' ? t.amount : -Math.abs(t.amount)) : Math.abs(t.amount)), 0)
+                      )}
+                    </span>
+                    <span className="text-[9px] text-slate-400 block mt-1 font-bold">Consolidado</span>
+                  </div>
+                  <div className="hidden md:flex bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 flex-col justify-center">
+                    <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Média</span>
+                    <span className="text-base sm:text-lg font-black text-slate-800 leading-none">
+                      {formatMoeda(
+                        filteredModalData.length > 0 ? filteredModalData.reduce((acc, t) => acc + Math.abs(t.amount), 0) / filteredModalData.length : 0
+                      )}
+                    </span>
+                    <span className="text-[9px] text-slate-400 block mt-1 font-bold">Por transação</span>
+                  </div>
+                </div>
+              )
             )}
           </div>
 
@@ -1009,6 +1130,15 @@ export const DashboardView = React.memo(function DashboardView({
                   className="w-full pl-11 pr-4 min-h-[44px] py-3 bg-white border border-slate-200/80 rounded-2xl text-sm font-semibold focus:outline-none focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-400 transition-all placeholder:text-slate-400 shadow-sm"
                 />
               </div>
+              {modalType === 'saldo-total' && (
+                <button 
+                  onClick={() => setShowAddManualForm(!showAddManualForm)}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-2xl text-xs font-bold shadow-sm transition-all flex items-center justify-center gap-1.5 shrink-0"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Conta Manual</span>
+                </button>
+              )}
               {modalType !== 'saldo-total' && (
                 <button 
                   onClick={() => setShowModalFiltersMobile(!showModalFiltersMobile)}
@@ -1092,9 +1222,113 @@ export const DashboardView = React.memo(function DashboardView({
                 )}
               </div>
             ) : modalType === 'saldo-total' ? (
-              <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-                {accountBalances && accountBalances.length > 0 ? (
-                  <>
+              <div className="space-y-4 pb-20 sm:pb-0">
+                {/* Form to add/edit manual accounts */}
+                {showAddManualForm && (
+                  <form onSubmit={handleSaveManualAccount} className="bg-slate-50 p-5 rounded-2xl border border-slate-200/60 mb-6 flex flex-col gap-4 animate-in slide-in-from-top-3 duration-300">
+                    <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
+                      <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                        <Plus className="w-4 h-4 text-emerald-600" />
+                        {editingAccountId ? 'Editar Conta Manual' : 'Adicionar Conta Manual'}
+                      </h3>
+                      <button 
+                        type="button" 
+                        onClick={() => { setShowAddManualForm(false); setEditingAccountId(null); }}
+                        className="text-slate-400 hover:text-slate-600 text-[10px] font-bold"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                    
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1">Instituição / Banco</label>
+                        <input 
+                          type="text" 
+                          maxLength={50}
+                          placeholder="Ex: Caixa, Nubank, Itaú..." 
+                          value={manualAccountForm.bankName}
+                          onChange={e => setManualAccountForm({ ...manualAccountForm, bankName: e.target.value })}
+                          className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm font-semibold focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1">Descrição / Titularidade</label>
+                        <input 
+                          type="text" 
+                          maxLength={50}
+                          placeholder="Ex: Conta corrente, Poupança..." 
+                          value={manualAccountForm.accountLabel}
+                          onChange={e => setManualAccountForm({ ...manualAccountForm, accountLabel: e.target.value })}
+                          className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm font-semibold focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1">Tipo de Conta</label>
+                        <select 
+                          value={manualAccountForm.accountType}
+                          onChange={e => setManualAccountForm({ ...manualAccountForm, accountType: e.target.value })}
+                          className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-600 focus:outline-none focus:border-emerald-500"
+                        >
+                          <option value="BANK">Conta Corrente</option>
+                          <option value="PAYMENT_ACCOUNT">Conta de Pagamento</option>
+                          <option value="SAVINGS">Poupança</option>
+                          <option value="INVESTMENT">Investimento</option>
+                          <option value="CREDIT">Cartão de Crédito</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1">Nº Conta (opcional)</label>
+                        <input 
+                          type="text" 
+                          maxLength={30}
+                          placeholder="Ex: final 1234" 
+                          value={manualAccountForm.number}
+                          onChange={e => setManualAccountForm({ ...manualAccountForm, number: e.target.value })}
+                          className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm font-semibold focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1">Saldo Atual (R$)</label>
+                        <input 
+                          type="number" 
+                          step="any"
+                          placeholder="e.g. 5000.00" 
+                          value={manualAccountForm.balance}
+                          onChange={e => setManualAccountForm({ ...manualAccountForm, balance: e.target.value })}
+                          className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm font-semibold focus:outline-none focus:border-emerald-500 text-slate-850"
+                        />
+                      </div>
+                    </div>
+                    
+                    <button 
+                      type="submit"
+                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 rounded-xl text-xs shadow-md transition-all uppercase tracking-wider"
+                    >
+                      {editingAccountId ? 'Salvar Alterações' : 'Salvar Nova Conta'}
+                    </button>
+                  </form>
+                )}
+
+                {filteredAccountBalances.length === 0 ? (
+                  <div className="px-6 py-12 text-center rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50/30">
+                    <Wallet className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+                    <h4 className="font-bold text-slate-700 text-sm mb-1">Nenhuma conta cadastrada ou localizada</h4>
+                    <p className="text-xs text-slate-400 mb-4">Adicione uma conta manual ou conecte ao Open Finance nas Configurações.</p>
+                    <button 
+                      type="button" 
+                      onClick={() => setShowAddManualForm(true)}
+                      className="bg-emerald-50 hover:bg-emerald-100 text-emerald-600 px-4 py-2 rounded-xl text-xs font-bold transition-all"
+                    >
+                      Cadastrar Conta Manual
+                    </button>
+                  </div>
+                ) : (
+                  <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+                    {/* Desktop View */}
                     <table className="w-full text-left border-collapse hidden sm:table">
                       <thead className="bg-slate-50/50">
                         <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
@@ -1105,144 +1339,138 @@ export const DashboardView = React.memo(function DashboardView({
                         </tr>
                       </thead>
                       <tbody className="text-sm text-slate-700 divide-y divide-slate-50">
-                        {filteredAccountBalances.length === 0 ? (
-                          <tr>
-                            <td colSpan={4} className="px-6 py-12 text-center text-slate-400 font-bold">Nenhuma conta localizada para os termos de busca.</td>
-                          </tr>
-                        ) : (
-                          filteredAccountBalances.map((acc) => (
-                            <tr key={acc.id} className={`hover:bg-slate-50/50 transition-colors group ${!acc.includeInSaldoTotal ? 'opacity-65' : ''}`}>
-                              <td className="px-6 py-4">
-                                <span className="flex items-center gap-3">
-                                  <div className="w-8 h-8 shrink-0 rounded-xl bg-violet-50 text-violet-600 flex items-center justify-center font-bold text-xs shadow-sm shadow-violet-100/50">
-                                    {acc.bankName ? acc.bankName.charAt(0).toUpperCase() : 'B'}
-                                  </div>
-                                  <div>
-                                    <span className="font-bold text-slate-800 max-w-[200px] truncate block" title={acc.bankName}>{acc.bankName}</span>
-                                    <span className="text-[10px] text-slate-400 block font-medium">{acc.accountLabel || acc.accountName} {acc.number ? `• Ag/Cc: ${acc.number}` : ''}</span>
-                                  </div>
-                                </span>
-                              </td>
-                              <td className="px-6 py-4 text-xs font-semibold text-slate-500 capitalize font-mono">
-                                {acc.accountType === 'BANK' ? 'Conta Corrente' : 
-                                 acc.accountType === 'CREDIT' ? 'Cartão de Crédito' : 
-                                 acc.accountType === 'SAVINGS' ? 'Poupança' : acc.accountType || 'Banco'}
-                              </td>
-                              <td className="px-6 py-4 text-center">
-                                <button 
-                                  onClick={() => handleToggleIncludeInTotal(acc.id!, acc.includeInSaldoTotal)}
-                                  className="mx-auto flex items-center justify-center p-1 rounded-lg hover:bg-slate-100 transition-all focus:outline-none"
-                                  title={acc.includeInSaldoTotal ? "Incluído na soma de Saldo Total" : "Ignorado na soma de Saldo Total"}
-                                >
-                                  {acc.includeInSaldoTotal ? (
-                                    <ToggleRight className="w-8 h-8 text-emerald-600" />
-                                  ) : (
-                                    <ToggleLeft className="w-8 h-8 text-slate-300" />
-                                  )}
-                                </button>
-                              </td>
-                              <td className={`px-6 py-4 text-right font-black ${acc.balance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                {formatMoeda(acc.balance)}
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-
-                    {/* Mobile Cards for Balance */}
-                    <div className="sm:hidden divide-y divide-slate-50">
-                      {filteredAccountBalances.length === 0 ? (
-                        <div className="px-6 py-12 text-center text-slate-400 font-bold italic">Nenhum dado para exibir.</div>
-                      ) : (
-                        filteredAccountBalances.map((acc) => (
-                          <div key={acc.id} className={`p-4 flex flex-col gap-3 ${!acc.includeInSaldoTotal ? 'opacity-65' : ''}`}>
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                <div className="w-10 h-10 shrink-0 rounded-2xl bg-violet-50 text-violet-600 flex items-center justify-center font-black text-sm shadow-sm">
+                        {filteredAccountBalances.map((acc) => (
+                          <tr key={acc.id} className={`hover:bg-slate-50/50 transition-colors group ${!acc.includeInSaldoTotal ? 'opacity-65' : ''}`}>
+                            <td className="px-6 py-4">
+                              <span className="flex items-center gap-3">
+                                <div className="w-8 h-8 shrink-0 rounded-xl bg-violet-50 text-violet-600 flex items-center justify-center font-bold text-xs shadow-sm shadow-violet-100/50">
                                   {acc.bankName ? acc.bankName.charAt(0).toUpperCase() : 'B'}
                                 </div>
                                 <div>
-                                  <div className="font-bold text-slate-800 text-sm truncate max-w-[150px]">{acc.bankName}</div>
-                                  <div className="text-[10px] text-slate-400 font-medium">{acc.accountLabel || acc.accountName} {acc.number ? `• cc: ${acc.number}` : ''}</div>
+                                  <span className="font-bold text-slate-800 max-w-[200px] truncate block" title={acc.bankName}>{acc.bankName}</span>
+                                  <span className="text-[10px] text-slate-400 block font-medium">{acc.accountLabel || acc.accountName} {acc.number ? `• Ag/Cc: ${acc.number}` : ''}</span>
+                                </div>
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-xs font-semibold text-slate-500 capitalize">
+                              <div className="flex flex-col">
+                                <span>
+                                  {acc.accountType === 'BANK' ? 'Conta Corrente' : 
+                                   acc.accountType === 'CREDIT' ? 'Cartão de Crédito' : 
+                                   acc.accountType === 'SAVINGS' ? 'Poupança' : 
+                                   acc.accountType === 'INVESTMENT' ? 'Investimento' :
+                                   acc.accountType || 'Banco'}
+                                </span>
+                                <span className={`text-[9.5px] font-bold ${acc.provider === 'manual' ? 'text-amber-600' : 'text-indigo-600'}`}>
+                                  {acc.provider === 'manual' ? 'Manual' : 'Sincronizado'}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 text-center">
+                              <button 
+                                onClick={() => handleToggleIncludeInTotal(acc.id!, acc.includeInSaldoTotal)}
+                                className="mx-auto flex items-center justify-center p-1 rounded-lg hover:bg-slate-100 transition-all focus:outline-none"
+                                title={acc.includeInSaldoTotal ? "Incluído na soma de Saldo Total" : "Ignorado na soma de Saldo Total"}
+                              >
+                                {acc.includeInSaldoTotal ? (
+                                  <ToggleRight className="w-8 h-8 text-emerald-600" />
+                                ) : (
+                                  <ToggleLeft className="w-8 h-8 text-slate-300" />
+                                )}
+                              </button>
+                            </td>
+                            <td className={`px-6 py-4 text-right ${acc.balance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              <div className="flex flex-col items-end">
+                                <span className="font-black text-sm">{formatMoeda(acc.balance)}</span>
+                                {acc.provider === 'manual' ? (
+                                  <div className="flex gap-2.5 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); handleStartEditManual(acc); }}
+                                      className="text-[9px] font-bold text-emerald-600 hover:underline uppercase"
+                                    >
+                                      Editar
+                                    </button>
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); if (confirm('Excluir esta conta manual?')) handleDeleteManualAccount(acc.id!); }}
+                                      className="text-[9px] font-bold text-rose-600 hover:underline uppercase"
+                                    >
+                                      Excluir
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <span className="text-[9px] text-slate-400 font-bold uppercase mt-1">Sincronizado</span>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+
+                    {/* Mobile View */}
+                    <div className="sm:hidden divide-y divide-slate-50">
+                      {filteredAccountBalances.map((acc) => (
+                        <div key={acc.id} className={`p-4 flex flex-col gap-3 ${!acc.includeInSaldoTotal ? 'opacity-65' : ''}`}>
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 shrink-0 rounded-2xl bg-violet-50 text-violet-600 flex items-center justify-center font-black text-sm shadow-sm">
+                                {acc.bankName ? acc.bankName.charAt(0).toUpperCase() : 'B'}
+                              </div>
+                              <div>
+                                <div className="font-bold text-slate-800 text-sm truncate max-w-[150px]">{acc.bankName}</div>
+                                <div className="text-[10px] text-slate-400 font-medium">{acc.accountLabel || acc.accountName} {acc.number ? `• cc: ${acc.number}` : ''}</div>
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                  <span className={`text-[8px] font-black uppercase tracking-wider px-1 rounded ${acc.provider === 'manual' ? 'bg-amber-50 text-amber-600 border border-amber-100' : 'bg-indigo-50 text-indigo-600 border border-indigo-100'}`}>
+                                    {acc.provider === 'manual' ? 'Manual' : 'Sinc'}
+                                  </span>
+                                  <span className="text-[8px] font-bold text-slate-450 uppercase">
+                                    {acc.accountType === 'BANK' ? 'C. Corrente' : 
+                                     acc.accountType === 'CREDIT' ? 'Cartão' : 
+                                     acc.accountType === 'SAVINGS' ? 'Poupança' : 
+                                     acc.accountType === 'INVESTMENT' ? 'Investimento' : 'Banco'}
+                                  </span>
                                 </div>
                               </div>
+                            </div>
+                            <div className="text-right flex flex-col items-end">
                               <div className={`text-sm font-black ${acc.balance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                                 {formatMoeda(acc.balance)}
                               </div>
-                            </div>
-                            <div className="flex items-center justify-between bg-slate-50 p-2 rounded-xl text-xs">
-                              <span className="font-medium text-slate-500">Incluir no Saldo Total:</span>
-                              <button 
-                                onClick={() => handleToggleIncludeInTotal(acc.id!, acc.includeInSaldoTotal)}
-                                className="flex items-center focus:outline-none animate-none"
-                              >
-                                {acc.includeInSaldoTotal ? (
-                                  <span className="text-emerald-600 font-bold flex items-center gap-1">Sim <ToggleRight className="w-6 h-6 animate-none" /></span>
-                                ) : (
-                                  <span className="text-slate-400 font-medium flex items-center gap-1">Não <ToggleLeft className="w-6 h-6 animate-none" /></span>
-                                )}
-                              </button>
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <table className="w-full text-left border-collapse hidden sm:table">
-                      <thead className="bg-slate-50/50">
-                        <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
-                          <th className="px-6 py-4">Instituição / Origem</th>
-                          <th className="px-6 py-4 text-right">Saldo Consolidado</th>
-                        </tr>
-                      </thead>
-                      <tbody className="text-sm text-slate-700 divide-y divide-slate-50">
-                        {Object.entries(filteredBalancesBySource).length === 0 ? (
-                          <tr>
-                            <td colSpan={2} className="px-6 py-12 text-center text-slate-400 font-bold">Nenhum dado encontrado.</td>
-                          </tr>
-                        ) : (
-                          Object.entries(filteredBalancesBySource as Record<string, number>).map(([source, amount], i) => (
-                            <tr key={i} className="hover:bg-slate-50/50 transition-colors group">
-                              <td className="px-6 py-4">
-                                <span className="flex items-center gap-3">
-                                  <div className="w-8 h-8 shrink-0 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-xs shadow-sm shadow-blue-100/50">
-                                    {source.charAt(0).toUpperCase()}
-                                  </div>
-                                  <span className="font-bold text-slate-800 max-w-[200px] truncate" title={source}>{source}</span>
-                                </span>
-                              </td>
-                              <td className={`px-6 py-4 text-right font-black ${amount >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                {formatMoeda(amount)}
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                    {/* Mobile Cards for Balance */}
-                    <div className="sm:hidden divide-y divide-slate-50">
-                      {Object.entries(filteredBalancesBySource).length === 0 ? (
-                        <div className="px-6 py-12 text-center text-slate-400 font-bold italic">Nenhum dado para exibir.</div>
-                      ) : (
-                        Object.entries(filteredBalancesBySource as Record<string, number>).map(([source, amount], i) => (
-                          <div key={i} className="p-4 flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                              <div className="w-10 h-10 shrink-0 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center font-black text-sm shadow-sm">
-                                {source.charAt(0).toUpperCase()}
-                              </div>
-                              <div className="font-bold text-slate-800 text-sm truncate max-w-[150px]">{source}</div>
-                            </div>
-                            <div className={`text-sm font-black ${amount >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                              {formatMoeda(amount)}
+                              {acc.provider === 'manual' && (
+                                <div className="flex gap-2.5 mt-1">
+                                  <button 
+                                    onClick={(e) => { e.stopPropagation(); handleStartEditManual(acc); }}
+                                    className="text-[9px] font-bold text-emerald-600 hover:underline uppercase"
+                                  >
+                                    Editar
+                                  </button>
+                                  <button 
+                                    onClick={(e) => { e.stopPropagation(); if (confirm('Excluir esta conta manual?')) handleDeleteManualAccount(acc.id!); }}
+                                    className="text-[9px] font-bold text-rose-600 hover:underline uppercase"
+                                  >
+                                    Excluir
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           </div>
-                        ))
-                      )}
+                          <div className="flex items-center justify-between bg-slate-50 p-2 rounded-xl text-xs">
+                            <span className="font-medium text-slate-500">Incluir no Saldo Total:</span>
+                            <button 
+                              onClick={() => handleToggleIncludeInTotal(acc.id!, acc.includeInSaldoTotal)}
+                              className="flex items-center focus:outline-none animate-none"
+                            >
+                              {acc.includeInSaldoTotal ? (
+                                <span className="text-emerald-600 font-bold flex items-center gap-1">Sim <ToggleRight className="w-6 h-6 animate-none" /></span>
+                              ) : (
+                                <span className="text-slate-400 font-medium flex items-center gap-1">Não <ToggleLeft className="w-6 h-6 animate-none" /></span>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  </>
+                  </div>
                 )}
               </div>
             ) : (

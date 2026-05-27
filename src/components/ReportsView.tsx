@@ -24,11 +24,13 @@ import {
   CreditCard,
   FileDown,
   Edit3,
-  Trash2
+  Trash2,
+  ToggleLeft,
+  ToggleRight
 } from 'lucide-react';
 import { secureGenerateContent } from '../lib/gemini';
 import html2pdf from 'html2pdf.js';
-import { deleteDoc, doc } from 'firebase/firestore';
+import { deleteDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { toast } from 'sonner';
 
@@ -175,6 +177,24 @@ export const ReportsView = React.memo(function ReportsView({
     setDragY(0);
   };
 
+  const handleToggleIncludeInTotal = async (accId: string, currentValue: boolean) => {
+    try {
+      const docRef = doc(db, 'accountBalances', accId);
+      await updateDoc(docRef, {
+        includeInSaldoTotal: !currentValue,
+        updatedAt: serverTimestamp()
+      });
+      toast.success(
+        !currentValue 
+          ? 'Conta incluída no cálculo do Saldo Total.' 
+          : 'Conta desconsiderada do cálculo do Saldo Total.'
+      );
+    } catch (err: any) {
+      console.error(err);
+      toast.error('Erro ao atualizar status do cálculo: ' + err.message);
+    }
+  };
+
   const handleDateMask = (value: string) => {
     let val = value.replace(/\D/g, '');
     if (val.length > 8) val = val.substring(0, 8);
@@ -247,10 +267,6 @@ export const ReportsView = React.memo(function ReportsView({
         if (acc.includeInSaldoTotal) {
           overallBalance += acc.balance;
         }
-      });
-    } else {
-      transactions.forEach(t => {
-        overallBalance += t.type === 'Receita' ? t.amount : -Math.abs(t.amount);
       });
     }
 
@@ -1051,6 +1067,22 @@ export const ReportsView = React.memo(function ReportsView({
         // Calculate filtered data once for use in both stats AND listings
         const formatMoeda = (val: number) => val.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
+        const filteredAccountBalances = (accountBalances || []).filter(acc => {
+          if (!modalSearchTerm) return true;
+          const term = modalSearchTerm.toLowerCase();
+          return (
+            acc.bankName.toLowerCase().includes(term) ||
+            acc.accountLabel.toLowerCase().includes(term) ||
+            acc.accountName.toLowerCase().includes(term) ||
+            (acc.number || '').includes(term)
+          );
+        });
+
+        const activeAccountsCount = filteredAccountBalances.filter(a => a.includeInSaldoTotal).length;
+        const totalAccountsBalance = filteredAccountBalances.filter(a => a.includeInSaldoTotal).reduce((sum, b) => sum + b.balance, 0);
+        const pluggyCount = filteredAccountBalances.filter(acc => acc.provider === 'pluggy').length;
+        const manualCount = filteredAccountBalances.filter(acc => acc.provider === 'manual').length;
+
         const filteredModalData = currentMonthTransactions.filter(t => {
           let typeMatch = false;
           if (modalDetail.type === 'category') {
@@ -1160,134 +1192,277 @@ export const ReportsView = React.memo(function ReportsView({
 
                   {/* Quick Stats Grid */}
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4 w-full">
-                    <div className="bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 flex flex-col justify-center">
-                      <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">
-                        <span className="sm:hidden">Movimentações</span>
-                        <span className="hidden sm:inline">Volume</span>
-                      </span>
-                      <span className="text-base sm:text-lg font-black text-slate-800 leading-none">
-                        {filteredModalData.length}
-                      </span>
-                      <span className="text-[9px] text-slate-400 block mt-1 font-bold">Itens</span>
-                    </div>
+                    {modalDetail.type === 'savings' ? (
+                      <>
+                        <div className="bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 flex flex-col justify-center">
+                          <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Ativas</span>
+                          <span className="text-base sm:text-lg font-black text-slate-800 leading-none">
+                            {activeAccountsCount}
+                          </span>
+                          <span className="text-[9px] text-slate-400 block mt-1 font-bold">Incluídas</span>
+                        </div>
+                        <div className="bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 col-span-1 md:col-span-2 flex flex-col justify-center">
+                          <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Saldo Disponível</span>
+                          <span className={`text-base sm:text-lg font-black leading-none ${totalAccountsBalance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                            {formatMoeda(totalAccountsBalance)}
+                          </span>
+                          <span className="text-[9px] text-slate-400 block mt-1 font-bold">Patrimônio Líquido</span>
+                        </div>
+                        <div className="hidden md:flex bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 flex flex-col justify-center">
+                          <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Origens</span>
+                          <span className="text-base sm:text-lg font-black text-slate-800 leading-none">
+                            {pluggyCount + manualCount}
+                          </span>
+                          <span className="text-[9px] text-slate-400 block mt-1 font-bold">
+                            {pluggyCount} Sinc / {manualCount} Man
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 flex flex-col justify-center">
+                          <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">
+                            <span className="sm:hidden">Movimentações</span>
+                            <span className="hidden sm:inline">Volume</span>
+                          </span>
+                          <span className="text-base sm:text-lg font-black text-slate-800 leading-none">
+                            {filteredModalData.length}
+                          </span>
+                          <span className="text-[9px] text-slate-400 block mt-1 font-bold">Itens</span>
+                        </div>
 
-                    <div className="bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 col-span-1 md:col-span-2 flex flex-col justify-center">
-                      <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Total</span>
-                      <span className={`text-base sm:text-lg font-black leading-none ${
-                        modalDetail.type === 'income' ? 'text-emerald-600' :
-                        modalDetail.type === 'expense' || modalDetail.type === 'category' ? 'text-rose-600' :
-                        modalDetail.type === 'balance' ? (totalAmount >= 0 ? 'text-emerald-600' : 'text-rose-600') :
-                        'text-slate-800'
-                      }`}>
-                        {modalDetail.type === 'income' ? '+' : modalDetail.type === 'expense' || modalDetail.type === 'category' ? '-' : ''} {formatMoeda(Math.abs(totalAmount))}
-                      </span>
-                      <span className="text-[9px] text-slate-400 block mt-1 font-bold">Consolidado</span>
-                    </div>
+                        <div className="bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 col-span-1 md:col-span-2 flex flex-col justify-center">
+                          <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Total</span>
+                          <span className={`text-base sm:text-lg font-black leading-none ${
+                            modalDetail.type === 'income' ? 'text-emerald-600' :
+                            modalDetail.type === 'expense' || modalDetail.type === 'category' ? 'text-rose-600' :
+                            modalDetail.type === 'balance' ? (totalAmount >= 0 ? 'text-emerald-600' : 'text-rose-600') :
+                            'text-slate-800'
+                          }`}>
+                            {modalDetail.type === 'income' ? '+' : modalDetail.type === 'expense' || modalDetail.type === 'category' ? '-' : ''} {formatMoeda(Math.abs(totalAmount))}
+                          </span>
+                          <span className="text-[9px] text-slate-400 block mt-1 font-bold">Consolidado</span>
+                        </div>
 
-                    <div className="hidden md:flex bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 flex flex-col justify-center">
-                      <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Média</span>
-                      <span className="text-base sm:text-lg font-black text-slate-800 leading-none">
-                        {formatMoeda(Math.abs(averageAmount))}
-                      </span>
-                      <span className="text-[9px] text-slate-400 block mt-1 font-bold">Por transação</span>
-                    </div>
+                        <div className="hidden md:flex bg-slate-50/50 rounded-2xl p-3 sm:p-4 border border-slate-100 flex flex-col justify-center">
+                          <span className="text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Média</span>
+                          <span className="text-base sm:text-lg font-black text-slate-800 leading-none">
+                            {formatMoeda(Math.abs(averageAmount))}
+                          </span>
+                          <span className="text-[9px] text-slate-400 block mt-1 font-bold">Por transação</span>
+                        </div>
+                      </>
+                    )}
                   </div>
                </div>
 
               {/* Modal Filters */}
               <div className="px-5 sm:px-8 py-4 bg-slate-50/80 border-b border-slate-100 flex flex-col gap-3 flex-shrink-0 touch-none sm:touch-auto" onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}>
-                <div className="flex gap-2 w-full">
-                  <div className="relative flex-1">
+                {modalDetail.type === 'savings' ? (
+                  <div className="relative w-full">
                     <Search className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input 
                       type="text" 
-                      placeholder="Pesquisar transação..." 
+                      placeholder="Pesquisar conta..." 
                       value={modalSearchTerm}
                       onChange={e => setModalSearchTerm(e.target.value)}
                       className="w-full pl-11 pr-4 min-h-[44px] py-3 bg-white border border-slate-200/80 rounded-2xl text-sm font-semibold focus:outline-none focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-400 transition-all placeholder:text-slate-400 shadow-sm"
                     />
                   </div>
-                  <button 
-                    onClick={() => setShowModalFiltersMobile(!showModalFiltersMobile)}
-                    className={`relative sm:hidden w-12 flex-shrink-0 rounded-2xl border transition-all flex items-center justify-center shadow-sm ${showModalFiltersMobile || [modalFilterDate, modalFilterCat, modalFilterAmountType, modalFilterAmount].filter(Boolean).length > 0 ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-white border-slate-200/80 text-slate-400'}`}
-                  >
-                    <Filter className="w-5 h-5" />
-                    {([modalFilterDate, modalFilterCat, modalFilterAmountType, modalFilterAmount].filter(Boolean).length) > 0 && !showModalFiltersMobile && (
-                      <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-emerald-500 rounded-full border-2 border-white"></span>
-                    )}
-                  </button>
-                </div>
-                
-                <div className={`${showModalFiltersMobile ? 'flex flex-col sm:flex-row' : 'hidden'} sm:flex grid-cols-2 sm:grid-cols-none sm:flex-wrap gap-2 animate-in slide-in-from-top-2 duration-300 fade-in`}>
-                  <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-1">
-                    <div className="relative col-span-1 sm:flex-1">
-                      <Calendar className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                      <input 
-                        type="text" 
-                        placeholder="Data" 
-                        value={modalFilterDate}
-                        onChange={e => setModalFilterDate(handleDateMask(e.target.value))}
-                        className="w-full pl-9 pr-3 min-h-[44px] py-3 bg-white border border-slate-200/80 rounded-xl text-sm font-semibold focus:outline-none focus:border-emerald-400 shadow-sm transition-all"
-                      />
-                      {modalFilterDate && <button onClick={() => setModalFilterDate('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 min-h-[44px] min-w-[44px] flex items-center justify-center"><X className="w-4 h-4"/></button>}
-                    </div>
-                    {modalDetail.type !== 'category' && (
-                      <div className="relative col-span-1 sm:flex-1">
-                        <Tag className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                ) : (
+                  <>
+                    <div className="flex gap-2 w-full">
+                      <div className="relative flex-1">
+                        <Search className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
                         <input 
                           type="text" 
-                          placeholder="Categoria" 
-                          value={modalFilterCat}
-                          onChange={e => setModalFilterCat(e.target.value)}
-                          className="w-full pl-9 pr-3 min-h-[44px] py-3 bg-white border border-slate-200/80 rounded-xl text-sm font-semibold focus:outline-none focus:border-emerald-400 shadow-sm transition-all"
+                          placeholder="Pesquisar transação..." 
+                          value={modalSearchTerm}
+                          onChange={e => setModalSearchTerm(e.target.value)}
+                          className="w-full pl-11 pr-4 min-h-[44px] py-3 bg-white border border-slate-200/80 rounded-2xl text-sm font-semibold focus:outline-none focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-400 transition-all placeholder:text-slate-400 shadow-sm"
                         />
-                        {modalFilterCat && <button onClick={() => setModalFilterCat('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 min-h-[44px] min-w-[44px] flex items-center justify-center"><X className="w-4 h-4"/></button>}
                       </div>
-                    )}
-                  </div>
-                  <div className="flex gap-2 sm:flex-none">
-                    <select
-                      value={modalFilterAmountType}
-                      onChange={e => setModalFilterAmountType(e.target.value as any)}
-                      className="bg-white border border-slate-200/80 rounded-xl text-sm font-semibold px-3 py-3 min-h-[44px] focus:outline-none focus:border-emerald-400 text-slate-600 flex-[0.6] sm:w-[140px] sm:flex-none shadow-sm appearance-none"
-                      style={{ backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`, backgroundPosition: 'right 0.5rem center', backgroundRepeat: 'no-repeat', backgroundSize: '1.5em 1.5em', paddingRight: '2.5rem' }}
-                    >
-                      <option value="">Valores</option>
-                      <option value="greater">Maior que &nbsp;&gt;</option>
-                      <option value="less">Menor que &nbsp;&lt;</option>
-                      <option value="equal">Igual a &nbsp;&nbsp;&nbsp;&nbsp;=</option>
-                    </select>
-                    <input
-                      type="number"
-                      placeholder="R$ 0,00"
-                      value={modalFilterAmount}
-                      onChange={e => setModalFilterAmount(e.target.value)}
-                      disabled={modalFilterAmountType === ''}
-                      className="flex-1 sm:w-32 px-3 py-3 min-h-[44px] bg-white border border-slate-200/80 rounded-xl text-sm font-semibold focus:outline-none focus:border-emerald-400 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-100 shadow-sm transition-all"
-                    />
-                  </div>
-                </div>
-                {([modalFilterDate, modalFilterCat, modalFilterAmountType, modalFilterAmount].filter(Boolean).length) > 0 && (
-                    <div className={`${showModalFiltersMobile ? 'flex' : 'hidden'} sm:flex justify-end mt-1 animate-in fade-in`}>
-                      <button onClick={() => {setModalFilterDate(''); setModalFilterCat(''); setModalFilterAmountType(''); setModalFilterAmount('');}} className="text-[10px] font-bold text-slate-400 hover:text-slate-600 uppercase tracking-widest flex items-center gap-1">
-                        <X className="w-3 h-3" /> Limpar Filtros
+                      <button 
+                        onClick={() => setShowModalFiltersMobile(!showModalFiltersMobile)}
+                        className={`relative sm:hidden w-12 flex-shrink-0 rounded-2xl border transition-all flex items-center justify-center shadow-sm ${showModalFiltersMobile || [modalFilterDate, modalFilterCat, modalFilterAmountType, modalFilterAmount].filter(Boolean).length > 0 ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-white border-slate-200/80 text-slate-400'}`}
+                      >
+                        <Filter className="w-5 h-5" />
+                        {([modalFilterDate, modalFilterCat, modalFilterAmountType, modalFilterAmount].filter(Boolean).length) > 0 && !showModalFiltersMobile && (
+                          <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-emerald-500 rounded-full border-2 border-white"></span>
+                        )}
                       </button>
                     </div>
+                    
+                    <div className={`${showModalFiltersMobile ? 'flex flex-col sm:flex-row' : 'hidden'} sm:flex grid-cols-2 sm:grid-cols-none sm:flex-wrap gap-2 animate-in slide-in-from-top-2 duration-300 fade-in`}>
+                      <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-1">
+                        <div className="relative col-span-1 sm:flex-1">
+                          <Calendar className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <input 
+                            type="text" 
+                            placeholder="Data" 
+                            value={modalFilterDate}
+                            onChange={e => setModalFilterDate(handleDateMask(e.target.value))}
+                            className="w-full pl-9 pr-3 min-h-[44px] py-3 bg-white border border-slate-200/80 rounded-xl text-sm font-semibold focus:outline-none focus:border-emerald-400 shadow-sm transition-all"
+                          />
+                          {modalFilterDate && <button onClick={() => setModalFilterDate('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 min-h-[44px] min-w-[44px] flex items-center justify-center"><X className="w-4 h-4"/></button>}
+                        </div>
+                        {modalDetail.type !== 'category' && (
+                          <div className="relative col-span-1 sm:flex-1">
+                            <Tag className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                            <input 
+                              type="text" 
+                              placeholder="Categoria" 
+                              value={modalFilterCat}
+                              onChange={e => setModalFilterCat(e.target.value)}
+                              className="w-full pl-9 pr-3 min-h-[44px] py-3 bg-white border border-slate-200/80 rounded-xl text-sm font-semibold focus:outline-none focus:border-emerald-400 shadow-sm transition-all"
+                            />
+                            {modalFilterCat && <button onClick={() => setModalFilterCat('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 min-h-[44px] min-w-[44px] flex items-center justify-center"><X className="w-4 h-4"/></button>}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex gap-2 sm:flex-none">
+                        <select
+                          value={modalFilterAmountType}
+                          onChange={e => setModalFilterAmountType(e.target.value as any)}
+                          className="bg-white border border-slate-200/80 rounded-xl text-sm font-semibold px-3 py-3 min-h-[44px] focus:outline-none focus:border-emerald-400 text-slate-600 flex-[0.6] sm:w-[140px] sm:flex-none shadow-sm appearance-none"
+                          style={{ backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`, backgroundPosition: 'right 0.5rem center', backgroundRepeat: 'no-repeat', backgroundSize: '1.5em 1.5em', paddingRight: '2.5rem' }}
+                        >
+                          <option value="">Valores</option>
+                          <option value="greater">Maior que &nbsp;&gt;</option>
+                          <option value="less">Menor que &nbsp;&lt;</option>
+                          <option value="equal">Igual a &nbsp;&nbsp;&nbsp;&nbsp;=</option>
+                        </select>
+                        <input
+                          type="number"
+                          placeholder="R$ 0,00"
+                          value={modalFilterAmount}
+                          onChange={e => setModalFilterAmount(e.target.value)}
+                          disabled={modalFilterAmountType === ''}
+                          className="flex-1 sm:w-32 px-3 py-3 min-h-[44px] bg-white border border-slate-200/80 rounded-xl text-sm font-semibold focus:outline-none focus:border-emerald-400 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-100 shadow-sm transition-all"
+                        />
+                      </div>
+                    </div>
+                    {([modalFilterDate, modalFilterCat, modalFilterAmountType, modalFilterAmount].filter(Boolean).length) > 0 && (
+                        <div className={`${showModalFiltersMobile ? 'flex' : 'hidden'} sm:flex justify-end mt-1 animate-in fade-in`}>
+                          <button onClick={() => {setModalFilterDate(''); setModalFilterCat(''); setModalFilterAmountType(''); setModalFilterAmount('');}} className="text-[10px] font-bold text-slate-400 hover:text-slate-600 uppercase tracking-widest flex items-center gap-1">
+                            <X className="w-3 h-3" /> Limpar Filtros
+                          </button>
+                        </div>
+                    )}
+                  </>
                 )}
               </div>
 
               <div className="flex-1 overflow-y-auto px-5 sm:px-8 py-5 bg-white">
-                {filteredModalData.length === 0 ? (
+                {modalDetail.type === 'savings' ? (
+                  <div className="space-y-4 pb-20 sm:pb-0">
+                    {/* Desktop Table */}
+                    <div className="hidden sm:block bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden animate-none">
+                      <table className="w-full text-left border-collapse">
+                        <thead className="bg-slate-50/50">
+                          <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 animate-none">
+                            <th className="px-6 py-4">Banco / Corretora</th>
+                            <th className="px-6 py-4">Identificação</th>
+                            <th className="px-6 py-4">Origem</th>
+                            <th className="px-6 py-4 text-right">Saldo</th>
+                            <th className="px-6 py-4 text-center">Somar no Total?</th>
+                          </tr>
+                        </thead>
+                        <tbody className="text-xs text-slate-700 divide-y divide-slate-50 font-medium">
+                          {filteredAccountBalances.length === 0 ? (
+                            <tr>
+                              <td colSpan={5} className="px-6 py-12 text-center text-slate-400 italic">Nenhuma conta cadastrada ou encontrada.</td>
+                            </tr>
+                          ) : (
+                            filteredAccountBalances.map((acc, i) => (
+                              <tr key={acc.id || i} className="hover:bg-slate-50/50 transition-colors animate-none">
+                                <td className="px-6 py-4 font-bold text-slate-800 flex items-center gap-2">
+                                  {acc.bankName}
+                                </td>
+                                <td className="px-6 py-4">
+                                  <div className="font-semibold text-slate-600 truncate max-w-[150px]">{acc.accountLabel || acc.accountName}</div>
+                                  <div className="text-[10px] text-slate-400 font-mono mt-0.5">{acc.number ? `Nº ${acc.number}` : 'N/D'}</div>
+                                </td>
+                                <td className="px-6 py-4">
+                                  {acc.provider === 'pluggy' ? (
+                                    <span className="px-2 py-0.5 bg-violet-100 text-violet-700 font-bold rounded text-[9px] uppercase tracking-wider">Conectado</span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 bg-amber-100 text-amber-700 font-bold rounded text-[9px] uppercase tracking-wider">Manual</span>
+                                  )}
+                                </td>
+                                <td className="px-6 py-4 text-right font-black text-slate-800 text-sm">
+                                  {formatMoeda(acc.balance)}
+                                </td>
+                                <td className="px-6 py-4 text-center">
+                                  <button 
+                                    onClick={() => handleToggleIncludeInTotal(acc.id!, acc.includeInSaldoTotal)}
+                                    className="inline-flex items-center focus:outline-none animate-none"
+                                  >
+                                    {acc.includeInSaldoTotal ? (
+                                      <ToggleRight className="w-6 h-6 text-emerald-600 animate-none" />
+                                    ) : (
+                                      <ToggleLeft className="w-6 h-6 text-slate-300 animate-none" />
+                                    )}
+                                  </button>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Mobile Cards */}
+                    <div className="sm:hidden flex flex-col gap-3">
+                      {filteredAccountBalances.length === 0 ? (
+                        <div className="text-center py-10 text-slate-400 italic font-medium">Nenhuma conta encontrada.</div>
+                      ) : (
+                        filteredAccountBalances.map((acc, i) => (
+                          <div key={acc.id || i} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-3">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <h4 className="font-extrabold text-slate-800 text-sm uppercase tracking-tight">{acc.bankName}</h4>
+                                <span className="text-[10px] text-slate-400 font-mono">{acc.accountLabel || acc.accountName}</span>
+                              </div>
+                              <span className="font-black text-sm text-slate-800">{formatMoeda(acc.balance)}</span>
+                            </div>
+                            <div className="flex items-center justify-between border-t border-slate-100 pt-3 text-xs">
+                              <span className="text-slate-400 font-bold">Origem:</span>
+                              {acc.provider === 'pluggy' ? (
+                                <span className="px-2 py-0.5 bg-violet-100 text-violet-700 font-bold rounded text-[9px] uppercase tracking-wider">Conectado</span>
+                              ) : (
+                                <span className="px-2 py-0.5 bg-amber-100 text-amber-700 font-bold rounded text-[9px] uppercase tracking-wider">Manual</span>
+                              )}
+                            </div>
+                            <div className="flex items-center justify-between bg-slate-50 p-2 rounded-xl text-xs">
+                              <span className="font-semibold text-slate-500">Incluir no Saldo Total:</span>
+                              <button 
+                                onClick={() => handleToggleIncludeInTotal(acc.id!, acc.includeInSaldoTotal)}
+                                className="flex items-center focus:outline-none animate-none"
+                              >
+                                {acc.includeInSaldoTotal ? (
+                                  <span className="text-emerald-600 font-bold flex items-center gap-1 font-bold">Sim <ToggleRight className="w-6 h-6 animate-none" /></span>
+                                ) : (
+                                  <span className="text-slate-400 font-medium flex items-center gap-1">Não <ToggleLeft className="w-6 h-6 animate-none" /></span>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                ) : filteredModalData.length === 0 ? (
                   <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-8 text-center text-slate-400 font-bold italic">
                     Nenhum dado encontrado para os filtros atuais.
                   </div>
                 ) : (
                   <div className="space-y-4 pb-20 sm:pb-0">
                     {/* Desktop Table */}
-                    <div className="hidden sm:block bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+                    <div className="hidden sm:block bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden animate-none">
                       <table className="w-full text-left border-collapse">
                         <thead className="bg-slate-50/50">
-                          <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
+                          <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 animate-none">
                             <th className="px-6 py-4">Data</th>
                             <th className="px-6 py-4">Categoria</th>
                             <th className="px-6 py-4">Descrição</th>
@@ -1358,7 +1533,7 @@ export const ReportsView = React.memo(function ReportsView({
                                 </span>
                               </div>
                               <div className="flex items-center gap-1">
-                                <button onClick={(e) => { e.stopPropagation(); onEditTransaction?.(item); handleCloseModal(); }} className="p-1.5 text-slate-400 active:bg-emerald-50 active:text-emerald-600 rounded-lg">
+                                <button onClick={(e) => { e.stopPropagation(); onEditTransaction?.(item); handleCloseModal(); }} className="p-1.5 text-slate-400 active:bg-emerald-50 active:text-emerald-600 rounded-lg font-bold">
                                   <Edit3 className="w-4 h-4" />
                                 </button>
                                 <button 
@@ -1367,7 +1542,7 @@ export const ReportsView = React.memo(function ReportsView({
                                     setDeletingId(item.id || null);
                                     setShowDeleteConfirmMobile(item.id || null);
                                   }} 
-                                  className={`p-1.5 rounded-lg transition-all ${deletingId === item.id ? 'bg-rose-600 text-white animate-pulse' : 'text-slate-400 active:bg-rose-50'}`}
+                                  className={`p-1.5 rounded-lg transition-all ${deletingId === item.id ? 'bg-rose-600 text-white animate-pulse font-bold' : 'text-slate-400 active:bg-rose-50'}`}
                                 >
                                   <Trash2 className="w-4 h-4" />
                                 </button>
