@@ -22,6 +22,7 @@ import { secureGenerateContent, Type } from '../lib/gemini';
 import { toast } from 'sonner';
 import { runLocalRecognition } from '../lib/recognition/engine/recognitionEngine';
 import { AUTO_ACCEPT, ACCEPT_WITH_BADGE, REVIEW_OR_AI } from '../lib/recognition/constants';
+import { mapToUserCategory } from '../lib/recognition/taxonomy/mapToUserCategory';
 
 interface ManualEntryModalProps {
   isOpen: boolean;
@@ -311,16 +312,25 @@ Siga estas instruções críticas:
           let txt = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
           const data = JSON.parse(txt);
           if (data.category) {
-            finalCat = data.category;
             finalDesc = data.cleanDescription || finalDesc;
             if (data.source) {
               finalSource = data.source;
             }
             usedAi = true;
-            finalConfidence = 0.95; // AI confidence booster
+            finalConfidence = 0.75; // Max 0.75 for non-deterministic AI fallback suggest
             finalMethod = 'AI_FALLBACK';
-            finalEvidence = ['Mapeado e Higienizado por Inteligência Artificial (Gemini Fallback)'];
-            finalNeedsReview = false;
+
+            // Validate using taxonomy/mapToUserCategory
+            const mappedCat = mapToUserCategory(data.category, userCategories);
+            if (mappedCat) {
+              finalCat = mappedCat;
+              finalNeedsReview = false;
+              finalEvidence = ['Mapeado e Higienizado por Inteligência Artificial (Gemini Fallback) - Validado localmente'];
+            } else {
+              finalCat = data.category;
+              finalNeedsReview = true; // Mark needsReview true since it is a new/proposed category
+              finalEvidence = ['Sugerido por Inteligência Artificial (Gemini Fallback) - Categoria sugerida não existe no perfil de categorias cadastradas do usuário'];
+            }
           }
         }
       } else {

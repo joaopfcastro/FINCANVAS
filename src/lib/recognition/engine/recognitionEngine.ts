@@ -77,6 +77,148 @@ export function runLocalRecognition(
     }
   }
 
+  // 3.5. Operation Details/Types + heuristics (banking explicit metadata takes high priority)
+  if (operationType) {
+    const opUpper = operationType.toUpperCase();
+    const typeLower = operationType.toLowerCase();
+
+    if (opUpper === 'FOLHA_PAGAMENTO' || opUpper === 'PORTABILIDADE_SALARIO') {
+      result.category = 'Salário';
+      result.cleanDescription = 'Salário Recebido';
+      result.confidence = 0.95;
+      result.method = 'OPERATION_TYPE';
+      result.type = 'Receita';
+      result.needsReview = false;
+      result.evidence = [`Operação bancária expressamente registrada como recebimento de salário (${operationType}).`];
+      return result as RecognitionResult;
+    }
+
+    if (opUpper === 'RENDIMENTO_APLIC_FINANCEIRA') {
+      result.category = 'Investimentos';
+      result.cleanDescription = 'Rendimento de Aplicação Financeira';
+      result.confidence = 0.95;
+      result.method = 'OPERATION_TYPE';
+      result.type = 'Receita';
+      result.needsReview = false;
+      result.evidence = ['Rendimento de aplicação financeira recebido.'];
+      return result as RecognitionResult;
+    }
+
+    if (opUpper === 'RESGATE_APLIC_FINANCEIRA') {
+      result.category = 'Investimentos';
+      result.cleanDescription = 'Resgate de Aplicação Financeira';
+      result.confidence = 0.95;
+      result.method = 'OPERATION_TYPE';
+      result.type = 'Receita';
+      result.needsReview = false;
+      result.evidence = ['Resgate de aplicação financeira efetuado.'];
+      return result as RecognitionResult;
+    }
+
+    if (opUpper === 'APLICACAO_FINANCEIRA') {
+      result.category = 'Investimentos';
+      result.cleanDescription = 'Aplicação Financeira';
+      result.confidence = 0.95;
+      result.method = 'OPERATION_TYPE';
+      result.type = 'Despesa';
+      result.needsReview = false;
+      result.evidence = ['Aplicação de recursos em investimento financeiro.'];
+      return result as RecognitionResult;
+    }
+
+    const selectCategory = (choices: string[], fallback: string): string => {
+      for (const choice of choices) {
+        const found = userCategories.find(c => c.trim().toLowerCase() === choice.trim().toLowerCase());
+        if (found) return found;
+      }
+      const foundFallback = userCategories.find(c => c.trim().toLowerCase() === fallback.trim().toLowerCase());
+      if (foundFallback) return foundFallback;
+      
+      const foundOutros = userCategories.find(c => c.trim().toLowerCase() === 'outros' || c.trim().toLowerCase() === 'outras');
+      return foundOutros || 'Outros';
+    };
+
+    if (opUpper === 'PACOTE_TARIFA_SERVICOS' || opUpper === 'TARIFA_SERVICOS_AVULSOS') {
+      result.category = selectCategory(['Tarifas Bancárias'], 'Tarifas Bancárias');
+      result.cleanDescription = 'Tarifa de Serviços Bancários';
+      result.confidence = 0.95;
+      result.method = 'OPERATION_TYPE';
+      result.type = 'Despesa';
+      result.needsReview = false;
+      result.evidence = [`Cobrança de tarifa bancária (${operationType}).`];
+      return result as RecognitionResult;
+    }
+
+    if (opUpper === 'ENCARGOS_JUROS_CHEQUE_ESPECIAL') {
+      result.category = selectCategory(['Tarifas Bancárias'], 'Tarifas Bancárias');
+      result.cleanDescription = 'Juros de Cheque Especial';
+      result.confidence = 0.95;
+      result.method = 'OPERATION_TYPE';
+      result.type = 'Despesa';
+      result.needsReview = false;
+      result.evidence = ['Cobrança de juros de cheque especial.'];
+      return result as RecognitionResult;
+    }
+
+    if (opUpper === 'IOF') {
+      result.category = selectCategory(['Impostos e Taxas', 'Tarifas Bancárias'], 'Impostos e Taxas');
+      result.cleanDescription = 'Imposto IOF';
+      result.confidence = 0.95;
+      result.method = 'OPERATION_TYPE';
+      result.type = 'Despesa';
+      result.needsReview = false;
+      result.evidence = ['Imposto sobre Operações Financeiras (IOF).'];
+      return result as RecognitionResult;
+    }
+
+    if (opUpper === 'SAQUE') {
+      result.category = selectCategory(['Transferências Internas'], 'Transferências Internas');
+      result.cleanDescription = 'Saque em Dinheiro';
+      result.confidence = 0.60; // Lower confidence to avoid being treated with absolute automatic certainty
+      result.method = 'OPERATION_TYPE';
+      result.needsReview = true; // Needs review in case it is spent or moved as cash
+      result.evidence = ['Saque de recursos em espécie (não é necessariamente uma despesa final direta).'];
+      return result as RecognitionResult;
+    }
+
+    if (opUpper === 'TRANSFERENCIA_MESMA_INSTITUICAO') {
+      result.category = selectCategory(['Transferências Internas'], 'Transferências Internas');
+      result.cleanDescription = cleanedDesc || 'Trf. mesma instituição';
+      result.confidence = 0.95;
+      result.method = 'OPERATION_TYPE';
+      result.needsReview = false;
+      result.isLikelyInternalTransfer = true;
+      result.shouldIgnoreInTotals = true;
+      result.evidence = ['Transferência entre contas de mesma titularidade na mesma instituição. Tratada como transferência interna.'];
+      return result as RecognitionResult;
+    }
+
+    if (['PIX', 'TED', 'DOC', 'BOLETO'].includes(opUpper)) {
+      // PIX/TED/DOC/BOLETO sozinhos não devem gerar categoria de alta confiança sem contraparte/histórico/merchant
+      result.method = 'OPERATION_TYPE';
+      result.confidence = 0.35;
+      result.needsReview = true;
+      result.evidence = [`Meio de pagamento genérico (${operationType}) sem identificação conclusiva do estabelecimento.`];
+    } else if (typeLower.includes('salary') || typeLower.includes('salario')) {
+      result.category = 'Salário';
+      result.cleanDescription = 'Salário Recebido';
+      result.confidence = 0.90;
+      result.method = 'OPERATION_TYPE';
+      result.type = 'Receita';
+      result.needsReview = false;
+      result.evidence = ['Operação bancária expressamente registrada como faturamento salarial.'];
+      return result as RecognitionResult;
+    } else if (typeLower.includes('juros') || typeLower.includes('interest')) {
+      result.category = 'Outros';
+      result.cleanDescription = 'Juros / Encargos';
+      result.confidence = 0.85;
+      result.method = 'OPERATION_TYPE';
+      result.evidence = ['Registrado no faturamento ou despesa de juros bancários.'];
+      result.needsReview = false;
+      return result as RecognitionResult;
+    }
+  }
+
   // 4. Description Match (learn from user verified past transactions)
   const historyMatch = matchDescriptionFromHistory(description, merchant, userHistory);
   if (historyMatch) {
@@ -138,124 +280,6 @@ export function runLocalRecognition(
       result.method = 'PLUGGY_CATEGORY';
       result.needsReview = false;
       result.evidence = [`Originalmente categorizado pela Pluggy como "${input.originalCategory}".`];
-      return result as RecognitionResult;
-    }
-  }
-
-  // 9. Operation Details/Types + heuristics
-  if (operationType) {
-    const opUpper = operationType.toUpperCase();
-    const typeLower = operationType.toLowerCase();
-
-    if (opUpper === 'FOLHA_PAGAMENTO' || opUpper === 'PORTABILIDADE_SALARIO') {
-      result.category = 'Salário';
-      result.cleanDescription = 'Salário Recebido';
-      result.confidence = 0.95;
-      result.method = 'OPERATION_TYPE';
-      result.type = 'Receita';
-      result.needsReview = false;
-      result.evidence = [`Operação bancária expressamente registrada como recebimento de salário (${operationType}).`];
-      return result as RecognitionResult;
-    }
-
-    if (opUpper === 'RENDIMENTO_APLIC_FINANCEIRA') {
-      result.category = 'Investimentos';
-      result.cleanDescription = 'Rendimento de Aplicação Financeira';
-      result.confidence = 0.95;
-      result.method = 'OPERATION_TYPE';
-      result.type = 'Receita';
-      result.needsReview = false;
-      result.evidence = ['Rendimento de aplicação financeira recebido.'];
-      return result as RecognitionResult;
-    }
-
-    if (opUpper === 'RESGATE_APLIC_FINANCEIRA') {
-      result.category = 'Investimentos';
-      result.cleanDescription = 'Resgate de Aplicação Financeira';
-      result.confidence = 0.95;
-      result.method = 'OPERATION_TYPE';
-      result.type = 'Receita';
-      result.needsReview = false;
-      result.evidence = ['Resgate de aplicação financeira efetuado.'];
-      return result as RecognitionResult;
-    }
-
-    if (opUpper === 'APLICACAO_FINANCEIRA') {
-      result.category = 'Investimentos';
-      result.cleanDescription = 'Aplicação Financeira';
-      result.confidence = 0.95;
-      result.method = 'OPERATION_TYPE';
-      result.type = 'Despesa';
-      result.needsReview = false;
-      result.evidence = ['Aplicação de recursos em investimento financeiro.'];
-      return result as RecognitionResult;
-    }
-
-    if (opUpper === 'PACOTE_TARIFA_SERVICOS' || opUpper === 'TARIFA_SERVICOS_AVULSOS') {
-      result.category = 'Outros';
-      result.cleanDescription = 'Tarifa de Serviços Bancários';
-      result.confidence = 0.95;
-      result.method = 'OPERATION_TYPE';
-      result.type = 'Despesa';
-      result.needsReview = false;
-      result.evidence = [`Cobrança de tarifa bancária (${operationType}).`];
-      return result as RecognitionResult;
-    }
-
-    if (opUpper === 'ENCARGOS_JUROS_CHEQUE_ESPECIAL') {
-      result.category = 'Outros';
-      result.cleanDescription = 'Juros de Cheque Especial';
-      result.confidence = 0.95;
-      result.method = 'OPERATION_TYPE';
-      result.type = 'Despesa';
-      result.needsReview = false;
-      result.evidence = ['Cobrança de juros de cheque especial.'];
-      return result as RecognitionResult;
-    }
-
-    if (opUpper === 'IOF') {
-      result.category = 'Outros';
-      result.cleanDescription = 'Imposto IOF';
-      result.confidence = 0.95;
-      result.method = 'OPERATION_TYPE';
-      result.type = 'Despesa';
-      result.needsReview = false;
-      result.evidence = ['Imposto sobre Operações Financeiras (IOF).'];
-      return result as RecognitionResult;
-    }
-
-    if (opUpper === 'SAQUE') {
-      result.category = 'Outros';
-      result.cleanDescription = 'Saque em Dinheiro';
-      result.confidence = 0.90;
-      result.method = 'OPERATION_TYPE';
-      result.needsReview = false;
-      result.evidence = ['Saque de recursos em espécie.'];
-      return result as RecognitionResult;
-    }
-
-    if (['PIX', 'TED', 'DOC', 'BOLETO', 'TRANSFERENCIA_MESMA_INSTITUICAO'].includes(opUpper)) {
-      // PIX/TED/DOC/BOLETO sozinhos não devem gerar categoria de alta confiança sem contraparte/histórico/merchant
-      result.method = 'OPERATION_TYPE';
-      result.confidence = 0.35;
-      result.needsReview = true;
-      result.evidence = [`Meio de pagamento genérico (${operationType}) sem identificação conclusiva do estabelecimento.`];
-    } else if (typeLower.includes('salary') || typeLower.includes('salario')) {
-      result.category = 'Salário';
-      result.cleanDescription = 'Salário Recebido';
-      result.confidence = 0.90;
-      result.method = 'OPERATION_TYPE';
-      result.type = 'Receita';
-      result.needsReview = false;
-      result.evidence = ['Operação bancária expressamente registrada como faturamento salarial.'];
-      return result as RecognitionResult;
-    } else if (typeLower.includes('juros') || typeLower.includes('interest')) {
-      result.category = 'Outros';
-      result.cleanDescription = 'Juros / Encargos';
-      result.confidence = 0.85;
-      result.method = 'OPERATION_TYPE';
-      result.evidence = ['Registrado no faturamento ou despesa de juros bancários.'];
-      result.needsReview = false;
       return result as RecognitionResult;
     }
   }

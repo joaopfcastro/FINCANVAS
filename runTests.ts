@@ -1,10 +1,10 @@
-import { parseOFX, parseCSV } from './src/components/ImportView.js';
+import { parseOFX, parseCSV } from './src/lib/import/parsers.js';
 import { runLocalRecognition } from './src/lib/recognition/engine/recognitionEngine.js';
 import { mapMccToCategory } from './src/lib/recognition/taxonomy/mccCategoryMapper.js';
 import { ACCEPT_WITH_BADGE } from './src/lib/recognition/constants.js';
+import { mapToUserCategory } from './src/lib/recognition/taxonomy/mapToUserCategory.js';
 
-// Setup mocks for Browser APIs to prevent crashes when importing ImportView.tsx which might load Firebase/React
-import { jsdom } from 'mocha'; // we don't have mocha, but we can do simple globalThis:
+// Setup mock global structures for minimal browser compatibility
 globalThis.window = {} as any;
 globalThis.localStorage = {
   getItem: () => null,
@@ -161,10 +161,113 @@ async function runTests() {
     }
 
     assert(localParsable.includes("extrato.ofx") && localParsable.includes("nota.txt") && localParsable.includes("fatura.csv"), "Arquivos estruturados (ofx/csv/txt/xml) devem ser parseados localmente");
-    assert(sentToAi.includes("recibo.pdf") && sentToAi.includes("foto.png"), "Apenas imagens e PDFs podem ser enviados para a IA");
+    assert(sentToAi.includes("recibo.pdf") && sentToAi.includes("foto.png"), "Apenas imagens e PDFs devem ser enviados para a IA");
     assert(!sentToAi.includes("extrato.ofx"), "OFX nunca deve ser enviado para IA");
   } catch (err: any) {
     console.error("Erro no teste 7:", err);
+    failed++;
+  }
+
+  // 8. Teste de validação mapToUserCategory e limite de confiança da IA Fallback
+  try {
+    const userCategories = ["Alimentação", "Transporte", "Tarifas Bancárias", "Lazer"];
+    // Verificar se categoria existente mapeia para ela mesma
+    const alignedValid = mapToUserCategory("Alimentação", userCategories);
+    const alignedInvalid = mapToUserCategory("Pets", userCategories); // Não existe no perfil do usuário
+
+    assert(alignedValid === "Alimentação", "mapToUserCategory deve manter 'Alimentação' intacta se existir nas do usuário");
+    assert(alignedInvalid === null, "mapToUserCategory deve retornar null para uma categoria nova e não mapeada");
+  } catch (err: any) {
+    console.error("Erro no teste 8:", err);
+    failed++;
+  }
+
+  // 9. Tarifas Bancárias (PACOTE_TARIFA_SERVICOS / TARIFA_SERVICOS_AVULSOS / ENCARGOS_JUROS_CHEQUE_ESPECIAL)
+  try {
+    const inputTarifa1 = {
+      description: "DEBITO TARIFA MENSAL",
+      amount: -29.90,
+      detectedDirection: 'Despesa' as const,
+      source: 'Itaú',
+      operationType: 'PACOTE_TARIFA_SERVICOS'
+    };
+    const inputTarifa2 = {
+      description: "DEC JUROS LMT S/PONTAS",
+      amount: -15.40,
+      detectedDirection: 'Despesa' as const,
+      source: 'Itaú',
+      operationType: 'ENCARGOS_JUROS_CHEQUE_ESPECIAL'
+    };
+
+    const resTarifa1 = runLocalRecognition(inputTarifa1, [], [], ["Tarifas Bancárias", "Outros"]);
+    const resTarifa2 = runLocalRecognition(inputTarifa2, [], [], ["Outros"]); // Sem Tarifas Bancárias, fallback para Outros
+
+    assert(resTarifa1.category === "Tarifas Bancárias", "PACOTE_TARIFA_SERVICOS deve mapear para Tarifas Bancárias se o usuário possuir a categoria");
+    assert(resTarifa2.category === "Outros", "ENCARGOS_JUROS_CHEQUE_ESPECIAL deve mapear para Outros se o usuário não possuir a categoria Tarifas Bancárias");
+  } catch (err: any) {
+    console.error("Erro no teste 9:", err);
+    failed++;
+  }
+
+  // 10. IOF preferindo escolher categoria existente do usuário
+  try {
+    const inputIof = {
+      description: "IOF TRANSAÇÃO CARTÃO",
+      amount: -12.30,
+      detectedDirection: 'Despesa' as const,
+      source: 'Nubank',
+      operationType: 'IOF'
+    };
+
+    // Caso A: Usuário tem Impostos e Taxas
+    const userCatsA = ["Impostos e Taxas", "Tarifas Bancárias", "Outros"];
+    const resIofA = runLocalRecognition(inputIof, [], [], userCatsA);
+    assert(resIofA.category === "Impostos e Taxas", "IOF deve preferir Impostos e Taxas se existir");
+
+    // Caso B: Usuário não tem Impostos e Taxas, mas tem Tarifas Bancárias
+    const userCatsB = ["Tarifas Bancárias", "Outros"];
+    const resIofB = runLocalRecognition(inputIof, [], [], userCatsB);
+    assert(resIofB.category === "Tarifas Bancárias", "IOF deve retroceder para Tarifas Bancárias se Impostos e Taxas faltar");
+  } catch (err: any) {
+    console.error("Erro no teste 10:", err);
+    failed++;
+  }
+
+  // 11. SAQUE -> Transferências Internas com menor confiança e needsReview true
+  try {
+    const inputSaque = {
+      description: "SAQUE TERMINAL 24H",
+      amount: -200.00,
+      detectedDirection: 'Despesa' as const,
+      source: 'Bradesco',
+      operationType: 'SAQUE'
+    };
+    
+    const resSaque = runLocalRecognition(inputSaque, [], [], ["Transferências Internas", "Outros"]);
+    assert(resSaque.category === "Transferências Internas", "SAQUE deve categorizar como Transferências Internas");
+    assert(resSaque.confidence === 0.60, "SAQUE deve ter confiança reduzida (0.60)");
+    assert(resSaque.needsReview === true, "SAQUE deve ter needsReview true");
+  } catch (err: any) {
+    console.error("Erro no teste 11:", err);
+    failed++;
+  }
+
+  // 12. TRANSFERENCIA_MESMA_INSTITUICAO -> Transferências Internas, isLikelyInternalTransfer true, shouldIgnoreInTotals true
+  try {
+    const inputTrf = {
+      description: "TRANSFERENCIA ENTRE CONTAS",
+      amount: -500.00,
+      detectedDirection: 'Despesa' as const,
+      source: 'Inter',
+      operationType: 'TRANSFERENCIA_MESMA_INSTITUICAO'
+    };
+
+    const resTrf = runLocalRecognition(inputTrf, [], [], ["Transferências Internas", "Outros"]);
+    assert(resTrf.category === "Transferências Internas", "TRANSFERENCIA_MESMA_INSTITUICAO deve mapear para Transferências Internas");
+    assert(resTrf.isLikelyInternalTransfer === true, "TRANSFERENCIA_MESMA_INSTITUICAO deve ter isLikelyInternalTransfer = true");
+    assert(resTrf.shouldIgnoreInTotals === true, "TRANSFERENCIA_MESMA_INSTITUICAO deve ter shouldIgnoreInTotals = true");
+  } catch (err: any) {
+    console.error("Erro no teste 12:", err);
     failed++;
   }
 
