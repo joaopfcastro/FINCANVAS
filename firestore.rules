@@ -74,6 +74,17 @@ service cloud.firestore {
              (!data.keys().hasAny(['sourceRaw']) || (data.sourceRaw is string && data.sourceRaw.size() <= 200));
     }
 
+    function isValidLearnedRule(data) {
+      return data.keys().hasAll(['userId', 'merchantKey', 'category', 'cleanDescription', 'type', 'createdAt', 'updatedAt']) &&
+             data.size() == 7 &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.merchantKey is string && data.merchantKey.size() <= 200 &&
+             data.category is string && data.category.size() <= 100 &&
+             data.cleanDescription is string && data.cleanDescription.size() <= 200 &&
+             data.type is string && (data.type == 'Receita' || data.type == 'Despesa') &&
+             data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
     match /transactions/{transactionId} {
       allow get: if isSignedIn() && existing().userId == request.auth.uid && isValidId(transactionId);
       allow delete: if isSignedIn() && existing().userId == request.auth.uid && isValidId(transactionId);
@@ -130,6 +141,33 @@ service cloud.firestore {
         incoming().updatedAt == request.time && 
         incoming().diff(existing()).affectedKeys().hasOnly(['highSpendingAlerts', 'categories', 'darkMode', 'phone', 'pluggyClientId', 'pluggyClientSecret', 'pluggyItemIds', 'updatedAt'])
       );
+
+      match /learnedRules/{ruleId} {
+        allow get: if isSignedIn() && userId == request.auth.uid && isValidId(ruleId);
+        allow delete: if isSignedIn() && userId == request.auth.uid && isValidId(ruleId);
+        allow list: if isSignedIn() && userId == request.auth.uid;
+        
+        allow create: if (
+          isSignedIn() && 
+          userId == request.auth.uid && 
+          isValidId(ruleId) && 
+          isValidLearnedRule(incoming()) && 
+          incoming().createdAt == request.time && 
+          incoming().updatedAt == request.time
+        );
+        
+        allow update: if (
+          isSignedIn() && 
+          userId == request.auth.uid && 
+          isValidId(ruleId) && 
+          isValidLearnedRule(incoming()) && 
+          existing().userId == request.auth.uid && 
+          incoming().userId == existing().userId && 
+          incoming().createdAt == existing().createdAt && 
+          incoming().updatedAt == request.time && 
+          incoming().diff(existing()).affectedKeys().hasOnly(['category', 'cleanDescription', 'type', 'updatedAt'])
+        );
+      }
     }
 
     match /accountBalances/{balanceId} {

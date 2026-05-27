@@ -4,7 +4,7 @@ import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import { UserProfile, Transaction } from '../App';
 import { doc, updateDoc, serverTimestamp, collection, setDoc, deleteDoc } from 'firebase/firestore';
 import { PluggySettingsPanel } from './PluggySettingsPanel';
-import { User as UserIcon, Bell, LogOut, CloudCog, Download, UploadCloud, Trash2, Loader2, Database, Palette, CheckCircle2, ChevronLeft, ChevronRight, CreditCard } from 'lucide-react';
+import { User as UserIcon, Bell, LogOut, CloudCog, Download, UploadCloud, Trash2, Loader2, Database, Palette, CheckCircle2, ChevronLeft, ChevronRight, CreditCard, Brain } from 'lucide-react';
 import { toast } from 'sonner';
 
 function normalizeText(text: string): string {
@@ -49,15 +49,26 @@ interface SettingsViewProps {
   user: User;
   profile: UserProfile;
   transactions: Transaction[];
+  learnedRules: any[];
 }
 
-export const SettingsView = React.memo(function SettingsView({ user, profile, transactions }: SettingsViewProps) {
-  const [activePanel, setActivePanel] = useState<'perfil' | 'notif' | 'ia' | 'aparencia' | 'pluggy'>('perfil');
+export const SettingsView = React.memo(function SettingsView({ user, profile, transactions, learnedRules = [] }: SettingsViewProps) {
+  const [activePanel, setActivePanel] = useState<'perfil' | 'notif' | 'ia' | 'aparencia' | 'pluggy' | 'regras'>('perfil');
   const [isMobileMenu, setIsMobileMenu] = useState(true);
 
   const [displayName, setDisplayName] = useState(user.displayName || '');
   const [photoURL, setPhotoURL] = useState(user.photoURL || '');
   const [phone, setPhone] = useState(profile.phone || '');
+
+  const handleDeleteRule = async (ruleId: string) => {
+    try {
+      const ruleRef = doc(db, 'users', user.uid, 'learnedRules', ruleId);
+      await deleteDoc(ruleRef);
+      toast.success('Regra aprendida removida de forma segura!');
+    } catch (err: any) {
+      toast.error('Não foi possível remover a regra: ' + err.message);
+    }
+  };
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
 
@@ -222,6 +233,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                 {activePanel === 'notif' && 'Notificações'}
                 {activePanel === 'ia' && 'Dados e Nuvem'}
                 {activePanel === 'pluggy' && 'Integração bancária'}
+                {activePanel === 'regras' && 'Regras de Aprendizado'}
               </span>
             </>
           )}
@@ -270,6 +282,14 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
               <div className="md:hidden p-2 rounded-xl bg-slate-50 text-slate-500 mr-3"><CreditCard className="w-4 h-4" /></div>
               <CreditCard className="hidden md:block w-4 h-4 mr-2 opacity-70" /> 
               <span className="font-bold text-[14px] md:text-sm">Integração bancária</span>
+              <ChevronRight className="md:hidden w-4 h-4 ml-auto text-slate-300" />
+            </button>
+            <button 
+              onClick={() => { setActivePanel('regras'); setIsMobileMenu(false); }}
+              className={`w-full text-left px-4 py-3.5 md:px-4 md:py-2.5 text-sm md:font-bold rounded-2xl md:rounded-lg transition-all flex items-center shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] md:shadow-none border border-slate-100 md:border-transparent ${activePanel === 'regras' ? 'bg-emerald-50/50 md:bg-emerald-50 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 border-emerald-100/50' : 'bg-white md:bg-transparent text-slate-700 md:text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50'} active:scale-[0.98]`}>
+              <div className="md:hidden p-2 rounded-xl bg-slate-50 text-slate-500 mr-3"><Brain className="w-4 h-4" /></div>
+              <Brain className="hidden md:block w-4 h-4 mr-2 opacity-70" /> 
+              <span className="font-bold text-[14px] md:text-sm">Regras de Aprendizado</span>
               <ChevronRight className="md:hidden w-4 h-4 ml-auto text-slate-300" />
             </button>
             <div className="hidden md:block border-t border-slate-200 dark:border-slate-700 my-4"></div>
@@ -471,7 +491,75 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                 user={user} 
                 profile={profile} 
                 transactions={transactions} 
+                learnedRules={learnedRules}
               />
+            )}
+
+            {activePanel === 'regras' && (
+              <div className="space-y-6">
+                <div className="border-b border-slate-100 dark:border-slate-700 pb-4">
+                  <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100">Regras de Aprendizado</h2>
+                  <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">
+                    Gerencie os mapeamentos personalizados aprendidos de suas correções. Regras do usuário têm prioridade máxima de matching.
+                  </p>
+                </div>
+
+                {learnedRules.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center p-12 text-center border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-900/30">
+                    <div className="p-4 rounded-full bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 mb-4">
+                      <Brain className="w-8 h-8 animate-pulse" />
+                    </div>
+                    <h3 className="font-bold text-slate-800 dark:text-slate-100 mb-1 font-sans">Nenhuma regra aprendida ainda</h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mt-2">
+                      Sempre que você altera a categoria de um lançamento, o sistema aprende o nome do estabelecimento ("merchantKey") para categorizar automaticamente da próxima vez.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="overflow-x-auto border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-900/50">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
+                            <th className="p-4 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 font-sans">Tipo</th>
+                            <th className="p-4 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 font-sans">Identificador Chave</th>
+                            <th className="p-4 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 font-sans">Descrição Limpa</th>
+                            <th className="p-4 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 font-sans">Categoria Alvo</th>
+                            <th className="p-4 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 font-sans text-right">Ação</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                          {learnedRules.map((rule) => (
+                            <tr key={rule.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/10">
+                              <td className="p-4 text-sm font-medium">
+                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold ${rule.type === 'Receita' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400' : 'bg-rose-50 text-rose-700 dark:bg-rose-900/20 dark:text-rose-400'}`}>
+                                  {rule.type}
+                                </span>
+                              </td>
+                              <td className="p-4 text-sm font-semibold text-slate-800 dark:text-slate-150 font-mono text-[13px]">
+                                {rule.merchantKey}
+                              </td>
+                              <td className="p-4 text-sm text-slate-600 dark:text-slate-300">
+                                {rule.cleanDescription}
+                              </td>
+                              <td className="p-4 text-sm font-medium text-slate-800 dark:text-slate-200">
+                                {rule.category}
+                              </td>
+                              <td className="p-4 text-sm text-right col-span-1">
+                                <button
+                                  onClick={() => handleDeleteRule(rule.id)}
+                                  className="p-1.5 px-3 text-rose-600 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg font-bold text-xs transition-all border border-rose-100 dark:border-rose-900/30 active:scale-95"
+                                >
+                                  Excluir
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
           </main>
         </div>

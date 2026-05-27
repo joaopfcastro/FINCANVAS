@@ -68,6 +68,21 @@
          "accountType", "balance", "includeInSaldoTotal", "includeReason", "lastSyncedAt", 
          "createdAt", "updatedAt"
       ]
+    },
+    "LearnedRule": {
+      "title": "LearnedRule",
+      "description": "User correction learned rule for transaction categorization",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "merchantKey": { "type": "string" },
+        "category": { "type": "string" },
+        "cleanDescription": { "type": "string" },
+        "type": { "type": "string", "enum": ["Receita", "Despesa"] },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["userId", "merchantKey", "category", "cleanDescription", "type", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -78,6 +93,10 @@
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/UserProfile" },
       "description": "User profiles collection"
+    },
+    "/users/{userId}/learnedRules/{ruleId}": {
+      "schema": { "$ref": "#/entities/LearnedRule" },
+      "description": "User specific learned rules for matching merchants"
     },
     "/accountBalances/{balanceId}": {
       "schema": { "$ref": "#/entities/AccountBalance" },

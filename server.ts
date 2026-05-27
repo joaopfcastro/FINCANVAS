@@ -9,6 +9,7 @@ import {
   classifyPluggyDirection, 
   cleanDescriptionLocally 
 } from "./src/lib/pluggyNormalizer";
+import { localRecognize, RawTransactionInput, LearnedRule } from "./src/lib/transactionRecognizer";
 
 dotenv.config();
 
@@ -833,85 +834,54 @@ async function startServer() {
         });
       }
 
+      // 1. Process EVERY transaction using local recognition engine
+      const userLearnedRules: LearnedRule[] = req.body.learnedRules || [];
+      
+      const localResults = rawTransactionsBatch.map(tx => {
+        const rawInput: RawTransactionInput = {
+          description: tx.desc,
+          amount: tx.amount,
+          operationType: tx.operationType,
+          mcc: (tx as any).mcc || null,
+          cnpj: (tx as any).cnpj || null,
+          merchant: tx.merchantName || null,
+          detectedDirection: tx.detectedDirection,
+          pluggyId: tx.pluggyId
+        };
+        const recognized = localRecognize(rawInput, userLearnedRules, userCategories);
+        return {
+          tx,
+          recognized
+        };
+      });
+
+      // Split into high confidence (local) and low confidence (needing AI)
+      const highConfidenceList = localResults.filter(r => r.recognized.confidence >= 0.80);
+      const lowConfidenceList = localResults.filter(r => r.recognized.confidence < 0.80);
+
+      console.log(`[Pluggy Sync Local Engine] Reconhecimento local concluído:`);
+      console.log(`  - Alta confiança (Processados localmente): ${highConfidenceList.length}`);
+      console.log(`  - Baixa confiança (Gargalo para IA): ${lowConfidenceList.length}`);
+
+      let geminiMapped: Record<string, { cat: string; desc: string }> = {};
+
       const ai = getAiClient();
-      let categorizedList: any[] = [];
+      if (lowConfidenceList.length > 0 && ai) {
+        console.log(`[Pluggy Sync AI Fallback] Enviando ${lowConfidenceList.length} transações com baixa confiança local para refinamento inteligente no Gemini...`);
+        const promptSystem = `Você é um excelente assistente financeiro de elite brasileiro. Algumas transações com baixa confiança local precisam de classificação e pós-processamento. Mapeie-as para estas categorias válidas: ${JSON.stringify(userCategories)}.
+Você NÃO PODE alterar o tipo da transação ou direção financeira. A direção financeira já foi calculada heuristicamente e está correta em 'detectedDirection' ('Receita' ou 'Despesa').
 
-      if (!ai) {
-        console.warn("[AIS DEV fallback] Sem API do Gemini configurada. Sincronizando com inteligência local heurística.");
-        categorizedList = rawTransactionsBatch.map(tx => {
-          let dateStr = "";
-          try {
-            const d = new Date(tx.date);
-            const dd = String(d.getDate()).padStart(2, '0');
-            const mm = String(d.getMonth() + 1).padStart(2, '0');
-            const yyyy = d.getFullYear();
-            dateStr = `${dd}/${mm}/${yyyy}`;
-          } catch(e) {
-            dateStr = tx.date;
-          }
-
-          const dl = tx.desc.toLowerCase();
-          let cat = "Outros";
-
-          if (dl.includes("ifood") || dl.includes("restaurante") || dl.includes("padaria") || dl.includes("alimentacao")) {
-            cat = userCategories.includes("Alimentação") ? "Alimentação" : userCategories[0];
-          } else if (dl.includes("uber") || dl.includes("posto") || dl.includes("99app") || dl.includes("combustivel")) {
-            cat = userCategories.includes("Transporte") ? "Transporte" : (userCategories[1] || userCategories[0]);
-          } else if (dl.includes("mercado") || dl.includes("carrefour") || dl.includes("pao de acucar")) {
-            cat = userCategories.includes("Alimentação") ? "Alimentação" : userCategories[0];
-          } else if (dl.includes("salario") || dl.includes("recebimento") || dl.includes("pix recebido") || dl.includes("rendimento")) {
-            cat = userCategories.includes("Salário") ? "Salário" : "Salário";
-          } else if (dl.includes("amazon") || dl.includes("shopee") || dl.includes("mercado livre")) {
-            cat = userCategories.includes("Compras Online") ? "Compras Online" : (userCategories[8] || userCategories[0]);
-          }
-
-          return {
-            pluggyId: tx.pluggyId,
-            date: dateStr,
-            desc: cleanDescriptionLocally(tx.desc),
-            cat,
-            type: tx.detectedDirection,
-            amount: tx.amount,
-            source: tx.source,
-            rawAmount: tx.rawAmount,
-            sourceRaw: tx.sourceRaw,
-            bankRawName: tx.bankRawName,
-            accountLabel: tx.accountLabel,
-            accountId: tx.accountId,
-            itemId: tx.itemId,
-            pluggyType: tx.pluggyType,
-            accountType: tx.accountType,
-            accountSubtype: tx.accountSubtype,
-            operationType: tx.operationType,
-            paymentData: tx.paymentData,
-            merchant: tx.merchantName,
-            detectedDirection: tx.detectedDirection,
-            directionConfidence: tx.directionConfidence,
-            directionReason: tx.directionReason,
-            isLikelyInternalTransfer: tx.isLikelyInternalTransfer,
-            shouldIgnoreInTotals: tx.shouldIgnoreInTotals
-          };
-        });
-      } else {
-        const promptSystem = `Você é um excelente assistente financeiro de elite brasileiro. Informamos que as transações obtidas via API Bancária crua precisam ser tratadas e mapeadas para as seguintes categorias válidas: ${JSON.stringify(userCategories)}.
-Você NÃO PODE de forma alguma alterar o tipo da transação ou direção financeira. A direção financeira já foi calculada heuristicamente de forma correta e está informada no campo 'detectedDirection' (valores 'Receita' ou 'Despesa').
-
-Sua tarefa para cada transação:
-1. 'cat': Escolha a categoria correspondente de dentro da lista de categorias válidas ou 'Outros'.
-2. 'desc': Corrija a descrição para termos amigáveis, curtos e limpos (Ex: "UBER *TRIP BR_HELP" vira "Uber", "IFOOD *RESTAURANTE SAO J" vira "iFood").
-
-Dados brutos estruturados das transações:
-${JSON.stringify(rawTransactionsBatch.map(tx => ({
-  pluggyId: tx.pluggyId,
-  description: tx.desc,
-  originalCategory: tx.originalCategory,
-  merchantName: tx.merchantName,
-  detectedDirection: tx.detectedDirection,
-  amount: tx.amount,
-  rawAmount: tx.rawAmount
+Lançamentos a classificar:
+${JSON.stringify(lowConfidenceList.map(r => ({
+  pluggyId: r.tx.pluggyId,
+  description: r.tx.desc,
+  originalCategory: r.tx.originalCategory || '',
+  merchantName: r.tx.merchantName || '',
+  detectedDirection: r.tx.detectedDirection,
+  amount: r.tx.amount
 })), null, 2)}
 
-Retorne obrigatoriamente um array JSON correspondendo a cada 'pluggyId' recebido na lista. Formato: [{ "pluggyId": "...", "cat": "...", "desc": "..." }]. Nenhuma outra informação deve ser fornecida.`;
+Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "...", "desc": "..."}]. Não adicione textos adicionais fora do JSON.`;
 
         try {
           const result = await ai.models.generateContent({
@@ -936,110 +906,67 @@ Retorne obrigatoriamente um array JSON correspondendo a cada 'pluggyId' recebido
 
           const geminiText = result.text || "[]";
           const parsedGemini = JSON.parse(geminiText) as any[];
-          const mapping: Record<string, any> = {};
-          for (const mapped of parsedGemini) {
-            mapping[mapped.pluggyId] = mapped;
+          for (const item of parsedGemini) {
+            geminiMapped[item.pluggyId] = {
+              cat: item.cat,
+              desc: item.desc
+            };
           }
-
-          categorizedList = rawTransactionsBatch.map(tx => {
-            const decision = mapping[tx.pluggyId] || {};
-            let dateStr = "";
-            try {
-              const d = new Date(tx.date);
-              const dd = String(d.getDate()).padStart(2, '0');
-              const mm = String(d.getMonth() + 1).padStart(2, '0');
-              const yyyy = d.getFullYear();
-              dateStr = `${dd}/${mm}/${yyyy}`;
-            } catch(e) {
-              dateStr = tx.date;
-            }
-
-            return {
-              pluggyId: tx.pluggyId,
-              date: dateStr,
-              desc: decision.desc || cleanDescriptionLocally(tx.desc),
-              cat: decision.cat || "Outros",
-              type: tx.detectedDirection,
-              amount: tx.amount,
-              source: tx.source,
-              rawAmount: tx.rawAmount,
-              sourceRaw: tx.sourceRaw,
-              bankRawName: tx.bankRawName,
-              accountLabel: tx.accountLabel,
-              accountId: tx.accountId,
-              itemId: tx.itemId,
-              pluggyType: tx.pluggyType,
-              accountType: tx.accountType,
-              accountSubtype: tx.accountSubtype,
-              operationType: tx.operationType,
-              paymentData: tx.paymentData,
-              merchant: tx.merchantName,
-              detectedDirection: tx.detectedDirection,
-              directionConfidence: tx.directionConfidence,
-              directionReason: tx.directionReason,
-              isLikelyInternalTransfer: tx.isLikelyInternalTransfer,
-              shouldIgnoreInTotals: tx.shouldIgnoreInTotals
-            };
-          });
+          console.log(`[Pluggy Sync AI Fallback] Gemini categorizou ${parsedGemini.length} transações com sucesso.`);
         } catch (aiError: any) {
-          console.warn("[Pluggy Sync Gemini Mapping error - Active robust heuristic fallback in use due to rate/spending limit]:", aiError?.message || aiError);
-          // Fallback heurístico total
-          categorizedList = rawTransactionsBatch.map(tx => {
-            const dl = tx.desc.toLowerCase();
-            let cat = "Outros";
-
-            if (dl.includes("ifood") || dl.includes("restaurante") || dl.includes("padaria") || dl.includes("alimentacao")) {
-              cat = userCategories.includes("Alimentação") ? "Alimentação" : userCategories[0];
-            } else if (dl.includes("uber") || dl.includes("posto") || dl.includes("99app") || dl.includes("combustivel")) {
-              cat = userCategories.includes("Transporte") ? "Transporte" : (userCategories[1] || userCategories[0]);
-            } else if (dl.includes("mercado") || dl.includes("carrefour") || dl.includes("pao de acucar")) {
-              cat = userCategories.includes("Alimentação") ? "Alimentação" : userCategories[0];
-            } else if (dl.includes("salario") || dl.includes("recebimento") || dl.includes("pix recebido") || dl.includes("rendimento")) {
-              cat = userCategories.includes("Salário") ? "Salário" : "Salário";
-            } else if (dl.includes("amazon") || dl.includes("shopee") || dl.includes("mercado livre")) {
-              cat = userCategories.includes("Compras Online") ? "Compras Online" : (userCategories[8] || userCategories[0]);
-            }
-
-            let dateStr = "";
-            try {
-              const d = new Date(tx.date);
-              const dd = String(d.getDate()).padStart(2, '0');
-              const mm = String(d.getMonth() + 1).padStart(2, '0');
-              const yyyy = d.getFullYear();
-              dateStr = `${dd}/${mm}/${yyyy}`;
-            } catch(e) {
-              dateStr = tx.date;
-            }
-
-            return {
-              pluggyId: tx.pluggyId,
-              date: dateStr,
-              desc: cleanDescriptionLocally(tx.desc),
-              cat,
-              type: tx.detectedDirection,
-              amount: tx.amount,
-              source: tx.source,
-              rawAmount: tx.rawAmount,
-              sourceRaw: tx.sourceRaw,
-              bankRawName: tx.bankRawName,
-              accountLabel: tx.accountLabel,
-              accountId: tx.accountId,
-              itemId: tx.itemId,
-              pluggyType: tx.pluggyType,
-              accountType: tx.accountType,
-              accountSubtype: tx.accountSubtype,
-              operationType: tx.operationType,
-              paymentData: tx.paymentData,
-              merchant: tx.merchantName,
-              detectedDirection: tx.detectedDirection,
-              directionConfidence: tx.directionConfidence,
-              directionReason: tx.directionReason,
-              isLikelyInternalTransfer: tx.isLikelyInternalTransfer,
-              shouldIgnoreInTotals: tx.shouldIgnoreInTotals
-            };
-          });
+          console.error("[Pluggy Sync AI Fallback Error]: Falha ao chamar Gemini. Utilizando fallback heurístico local.", aiError?.message || aiError);
         }
       }
+
+      // Build the final compiled list
+      const categorizedList = localResults.map(r => {
+        const tx = r.tx;
+        const localRec = r.recognized;
+        const aiMatch = geminiMapped[tx.pluggyId];
+
+        // Format Date
+        let dateStr = "";
+        try {
+          const d = new Date(tx.date);
+          const dd = String(d.getDate()).padStart(2, '0');
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const yyyy = d.getFullYear();
+          dateStr = `${dd}/${mm}/${yyyy}`;
+        } catch(e) {
+          dateStr = tx.date;
+        }
+
+        // Final values resolved either from Gemini (if low confidence & succeeded) or from local recognition
+        const finalCat = aiMatch?.cat || localRec.category;
+        const finalDesc = aiMatch?.desc || localRec.cleanDescription;
+
+        return {
+          pluggyId: tx.pluggyId,
+          date: dateStr,
+          desc: finalDesc,
+          cat: finalCat,
+          type: tx.detectedDirection,
+          amount: tx.amount,
+          source: tx.source,
+          rawAmount: tx.rawAmount,
+          sourceRaw: tx.sourceRaw,
+          bankRawName: tx.bankRawName,
+          accountLabel: tx.accountLabel,
+          accountId: tx.accountId,
+          itemId: tx.itemId,
+          pluggyType: tx.pluggyType,
+          accountType: tx.accountType,
+          accountSubtype: tx.accountSubtype,
+          operationType: tx.operationType,
+          paymentData: tx.paymentData,
+          merchant: tx.merchantName,
+          detectedDirection: tx.detectedDirection,
+          directionConfidence: aiMatch ? 0.95 : localRec.confidence,
+          directionReason: aiMatch ? "Mapeado e Higienizado por Inteligência Artificial (Gemini Fallback)" : localRec.evidence,
+          isLikelyInternalTransfer: tx.isLikelyInternalTransfer,
+          shouldIgnoreInTotals: tx.shouldIgnoreInTotals
+        };
+      });
 
       res.json({ success: true, ok: true, transactions: categorizedList, accounts: rawAccountsBatch });
     } catch (err: any) {

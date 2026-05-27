@@ -92,6 +92,17 @@ export interface AccountBalance {
   raw?: any;
 }
 
+export interface LearnedRule {
+  id?: string;
+  userId: string;
+  merchantKey: string;
+  category: string;
+  cleanDescription: string;
+  type: 'Receita' | 'Despesa';
+  createdAt: any;
+  updatedAt: any;
+}
+
 type View = 'dashboard' | 'import' | 'reports' | 'settings';
 
 export default function App() {
@@ -101,6 +112,8 @@ export default function App() {
   const [loadingTransactions, setLoadingTransactions] = useState(true);
   const [accountBalances, setAccountBalances] = useState<AccountBalance[]>([]);
   const [loadingAccountBalances, setLoadingAccountBalances] = useState(true);
+  const [learnedRules, setLearnedRules] = useState<LearnedRule[]>([]);
+  const [loadingLearnedRules, setLoadingLearnedRules] = useState(true);
   const [loadingContext, setLoadingContext] = useState(true);
   const [activeView, setActiveView] = useState<View>('dashboard');
   const [authError, setAuthError] = useState('');
@@ -251,6 +264,34 @@ export default function App() {
       }, err => {
         setLoadingAccountBalances(false);
         handleFirestoreError(err, OperationType.LIST, 'accountBalances');
+      });
+    });
+    return () => {
+      if (unsubs) unsubs();
+    };
+  }, [user]);
+
+  useEffect(() => {
+    let unsubs: () => void;
+    if (!user) {
+      setLearnedRules([]);
+      setLoadingLearnedRules(false);
+      return;
+    }
+    setLoadingLearnedRules(true);
+    const colRef = collection(db, 'users', user.uid, 'learnedRules');
+    import('firebase/firestore').then(({ query }) => {
+      const q = query(colRef);
+      unsubs = onSnapshot(q, { includeMetadataChanges: true }, (snap) => {
+        if (snap.metadata.fromCache && snap.empty) {
+          return;
+        }
+        const rules = snap.docs.map(d => ({ id: d.id, ...d.data() } as LearnedRule));
+        setLearnedRules(rules);
+        setLoadingLearnedRules(false);
+      }, err => {
+        setLoadingLearnedRules(false);
+        handleFirestoreError(err, OperationType.LIST, 'learnedRules');
       });
     });
     return () => {
@@ -737,7 +778,7 @@ export default function App() {
             accountBalances={accountBalances}
           />
         )}
-        {activeView === 'settings' && <SettingsView user={user} profile={profile} transactions={transactions} />}
+        {activeView === 'settings' && <SettingsView user={user} profile={profile} transactions={transactions} learnedRules={learnedRules} />}
       </main>
 
       <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white/90 dark:bg-slate-800/90 backdrop-blur-xl z-50 border-t border-slate-200/50 dark:border-slate-700/50 shadow-[0_-8px_20px_-6px_rgba(0,0,0,0.08)]" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 12px)' }}>

@@ -20,6 +20,7 @@ interface PluggySettingsPanelProps {
   user: User;
   profile: UserProfile;
   transactions: Transaction[];
+  learnedRules?: any[];
 }
 
 function normalizeText(text: string): string {
@@ -164,7 +165,7 @@ const AdvancedAccordion = ({ title, icon, isOpen, onToggle, children }: Advanced
   );
 };
 
-export function PluggySettingsPanel({ user, profile, transactions }: PluggySettingsPanelProps) {
+export function PluggySettingsPanel({ user, profile, transactions, learnedRules = [] }: PluggySettingsPanelProps) {
   // --- LOCAL SYNCHRONIZED IDS (OPTIMISTIC STATE) ---
   const [localItemIds, setLocalItemIds] = useState<string[]>(profile.pluggyItemIds || []);
   
@@ -630,7 +631,8 @@ export function PluggySettingsPanel({ user, profile, transactions }: PluggySetti
         headers: getPluggyHeaders(),
         body: JSON.stringify({
           categories: profile.categories || [],
-          itemIds: localItemIds
+          itemIds: localItemIds,
+          learnedRules
         })
       });
 
