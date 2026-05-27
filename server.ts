@@ -27,15 +27,20 @@ import { RawTransactionInput as NewRawInput, UserRecognitionRule } from "./src/l
 dotenv.config();
 
 // In-memory registry of received Pluggy webhook events for developer diagnostics
-interface PluggyWebhookEvent {
+interface PluggyWebhookEventLog {
   id: string;
-  receivedAt: string;
   event: string;
-  itemId: string;
-  status: string;
+  itemId?: string;
+  transactionIds?: string[];
+  clientUserId?: string;
+  triggeredBy?: string;
+  receivedAt: string;
+  status: "received" | "processed" | "ignored" | "failed" | "requires_user_action";
+  itemStatus?: string;
   rawBody: any;
+  error?: string;
 }
-const receivedWebhookEvents: PluggyWebhookEvent[] = [];
+const receivedWebhookEvents: PluggyWebhookEventLog[] = [];
 
 // Helper to safely parse JSON responses from external APIs (like Pluggy)
 async function safeJson(response: any): Promise<any> {
@@ -350,11 +355,12 @@ async function startServer() {
 
   // 0. Check secure credentials status
   app.get("/api/pluggy/credentials_status", (req, res) => {
+    const webhookSecretConfigured = !!process.env.PLUGGY_WEBHOOK_SECRET;
     try {
       getPluggyCredentialsOrThrow(req);
-      res.json({ configured: true });
+      res.json({ configured: true, webhookSecretConfigured });
     } catch {
-      res.json({ configured: false });
+      res.json({ configured: false, webhookSecretConfigured });
     }
   });
 
@@ -668,7 +674,20 @@ async function startServer() {
     try {
       const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
-      const webhook = await PluggyService.createWebhook(apiKey, event || "item/updated", url);
+      
+      const customHeaders: Record<string, string> = {};
+      const secret = process.env.PLUGGY_WEBHOOK_SECRET;
+      if (secret) {
+        customHeaders["X-FINCANVAS-WEBHOOK-SECRET"] = secret;
+      }
+
+      console.log(`[server.ts webhook] customHeaders config:`, secret ? "Configurado!" : "Não configurado");
+      const webhook = await PluggyService.createWebhook(
+        apiKey, 
+        event || "item/updated", 
+        url, 
+        Object.keys(customHeaders).length > 0 ? customHeaders : undefined
+      );
       res.json({ success: true, webhook });
     } catch (err: any) {
       console.error("[Pluggy create_webhook HTTP Router Error]:", err.message);
@@ -713,18 +732,73 @@ async function startServer() {
 
   // 2.5 Listener de Webhook: Chamado externamente pela Pluggy
   app.post("/api/pluggy/webhook_listener", async (req, res) => {
+    const webhookSecret = process.env.PLUGGY_WEBHOOK_SECRET;
+    if (webhookSecret) {
+      const incomingSecret = req.headers["x-fincanvas-webhook-secret"];
+      if (!incomingSecret || incomingSecret !== webhookSecret) {
+        console.warn("[Pluggy Webhook Receiver] Secret validation failed!");
+        return res.status(401).json({ error: "Unauthorized: Invalid or missing webhook secret." });
+      }
+    }
+
     console.log("[Pluggy Webhook Receiver] Novo evento capturado no endpoint:");
     console.log(JSON.stringify(req.body, null, 2));
 
     try {
-      const { event, id, item } = req.body;
-      const eventLog: PluggyWebhookEvent = {
-        id: id || `wh-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-        receivedAt: new Date().toISOString(),
+      const { event, id, item, transactionIds, clientUserId, triggeredBy, error } = req.body;
+      
+      let logStatus: "received" | "processed" | "ignored" | "failed" | "requires_user_action" = "received";
+      
+      let errMsg = error;
+      if (errMsg && typeof errMsg === 'object') {
+        errMsg = JSON.stringify(errMsg);
+      } else if (errMsg) {
+        errMsg = String(errMsg);
+      }
+
+      switch (event) {
+        case "item/updated":
+          logStatus = "processed"; // registrado e marcado como candidato para sync
+          break;
+        case "item/error":
+          if (errMsg && (errMsg.toLowerCase().includes("user") || errMsg.toLowerCase().includes("mfa") || errMsg.toLowerCase().includes("credentials"))) {
+            logStatus = "requires_user_action";
+          } else {
+            logStatus = "failed";
+          }
+          break;
+        case "item/waiting_user_input":
+        case "item/waiting_user_action":
+          logStatus = "requires_user_action";
+          break;
+        case "item/login_succeeded":
+          logStatus = "processed";
+          break;
+        case "transactions/created":
+        case "transactions/updated":
+        case "transactions/deleted":
+          logStatus = "processed";
+          break;
+        case "connector/status_updated":
+          logStatus = "processed";
+          break;
+        default:
+          logStatus = "received";
+          break;
+      }
+
+      const eventLog: PluggyWebhookEventLog = {
+        id: id || `wh-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         event: event || "item/updated",
-        itemId: item?.id || "desconhecido",
-        status: item?.status || "UPDATED",
-        rawBody: req.body
+        itemId: item?.id || req.body.itemId || undefined,
+        transactionIds: transactionIds || undefined,
+        clientUserId: clientUserId || item?.clientUserId || undefined,
+        triggeredBy: triggeredBy || undefined,
+        receivedAt: new Date().toISOString(),
+        status: logStatus,
+        itemStatus: item?.status || undefined,
+        rawBody: req.body,
+        error: errMsg || undefined
       };
 
       receivedWebhookEvents.unshift(eventLog);
@@ -732,11 +806,11 @@ async function startServer() {
         receivedWebhookEvents.length = 100;
       }
 
-      console.log(`[Pluggy Webhook Receiver] Evento '${event}' registrado com sucesso. Item: ${item?.id || "N/A"} Status: ${item?.status || "N/A"} `);
-      res.sendStatus(200);
+      console.log(`[Pluggy Webhook Receiver] Evento '${event}' registrado com sucesso. Status: ${logStatus}`);
+      return res.status(200).json({ success: true, eventLog });
     } catch (err: any) {
       console.error("[Pluggy Webhook Receiver Error]:", err.message);
-      res.sendStatus(500);
+      return res.status(500).json({ error: err.message });
     }
   });
 

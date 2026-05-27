@@ -202,6 +202,8 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
   const [pluggyWebhooks, setPluggyWebhooks] = useState<any[]>([]);
   const [isLoadingWebhooks, setIsLoadingWebhooks] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState('');
+  const [selectedEvent, setSelectedEvent] = useState('item/updated');
+  const [isWebhookSecretConfigured, setIsWebhookSecretConfigured] = useState(false);
   const [isRegisteringWebhook, setIsRegisteringWebhook] = useState(false);
   const [capturedEvents, setCapturedEvents] = useState<any[]>([]);
   const [isLoadingEvents, setIsLoadingEvents] = useState(false);
@@ -757,7 +759,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
         return;
       }
 
-      setPluggySyncStep(`Organizando com Inteligência Artificial. Gravando ${filterToInsert.length} transações...`);
+      setPluggySyncStep(`Reconhecendo transações com motor local. Gravando ${filterToInsert.length} transações...`);
 
       const transactionsCollectionRef = doc(db, 'transactions', 'dummy').parent;
 
@@ -796,7 +798,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
         } as any);
       }
 
-      setPluggySyncStep(`Concluído! ${filterToInsert.length} transações adicionadas e mapeadas pelo Gemini.`);
+      setPluggySyncStep(`Concluído! ${filterToInsert.length} transações adicionadas e reconhecidas localmente.`);
       toast.success(`${filterToInsert.length} transações importadas com sucesso!`);
     } catch (err: any) {
       console.error(err);
@@ -941,7 +943,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
         method: 'POST',
         headers: getPluggyHeaders(),
         body: JSON.stringify({
-          event: 'item/updated',
+          event: selectedEvent,
           url: webhookUrl.trim()
         })
       });
@@ -1016,6 +1018,9 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
         const data = await safeJsonClient(res);
         if (data.configured) {
           setIsPluggyConfiguredOnServer(true);
+        }
+        if (data.webhookSecretConfigured) {
+          setIsWebhookSecretConfigured(true);
         }
       } catch (err) {
         console.error('Erro ao verificar credenciais do servidor:', err);
@@ -1745,24 +1750,97 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
               </p>
             </div>
 
-            <form onSubmit={handleRegisterWebhook} className="space-y-2">
-              <div className="space-y-1">
-                <label htmlFor="webhook_input" className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">URL do Listener de Entrada</label>
-                <input
-                  id="webhook_input"
-                  type="url"
-                  value={webhookUrl}
-                  onChange={(e) => setWebhookUrl(e.target.value)}
-                  className="w-full h-10 bg-slate-50 dark:bg-black text-slate-850 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-indigo-505 focus:ring-emerald-500"
-                />
+            <form onSubmit={handleRegisterWebhook} className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label htmlFor="webhook_input" className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block font-sans">URL do Listener de Entrada</label>
+                  <div className="flex gap-2">
+                    <input
+                      id="webhook_input"
+                      type="url"
+                      value={webhookUrl}
+                      onChange={(e) => setWebhookUrl(e.target.value)}
+                      className="flex-1 h-10 bg-slate-50 dark:bg-black text-slate-850 dark:text-slate-100 border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(webhookUrl, 'webhook-url')}
+                      className="h-10 px-3 border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 rounded-lg text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-250 transition-colors flex items-center justify-center cursor-pointer shrink-0"
+                      title="Copiar URL"
+                    >
+                      {copiedStates['webhook-url'] ? (
+                        <Check className="w-4 h-4 text-emerald-500" />
+                      ) : (
+                        <Copy className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label htmlFor="webhook_event_select" className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block font-sans">Evento do Webhook</label>
+                  <select
+                    id="webhook_event_select"
+                    value={selectedEvent}
+                    onChange={(e) => setSelectedEvent(e.target.value)}
+                    className="w-full h-10 bg-slate-50 dark:bg-black text-slate-850 dark:text-slate-100 border border-slate-200 dark:border-slate-805 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer text-slate-700 dark:text-slate-350"
+                  >
+                    <option value="all">Todos os Eventos (all)</option>
+                    <option value="item/created">Item Criado (item/created)</option>
+                    <option value="item/updated">Item Atualizado (item/updated)</option>
+                    <option value="item/error">Erro no Item (item/error)</option>
+                    <option value="item/waiting_user_input">Aguardando Login/MFA (item/waiting_user_input)</option>
+                    <option value="item/waiting_user_action">Aguardando Ação do Usuário (item/waiting_user_action)</option>
+                    <option value="item/login_succeeded">Login com Sucesso (item/login_succeeded)</option>
+                    <option value="transactions/created">Transações Criadas (transactions/created)</option>
+                    <option value="transactions/updated">Transações Atualizadas (transactions/updated)</option>
+                    <option value="transactions/deleted">Transações Apagadas (transactions/deleted)</option>
+                    <option value="connector/status_updated">Status do Conector Atualizado (connector/status_updated)</option>
+                  </select>
+                </div>
               </div>
+
+              {/* Status & Security Indicators */}
+              <div className="flex flex-wrap gap-2 pt-1">
+                {isWebhookSecretConfigured ? (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50/70 text-emerald-700 border border-emerald-200 rounded-full text-[10px] font-semibold dark:bg-emerald-950/20 dark:text-emerald-400 dark:border-emerald-900/40">
+                    <ShieldCheck className="w-3.5 h-3.5 shrink-0 text-emerald-500" />
+                    <span>Seguro (Segredo x-fincanvas-webhook-secret configurado)</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-amber-50/70 text-amber-700 border border-amber-200 rounded-full text-[10px] font-semibold dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/40">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-500 animate-pulse" />
+                    <span>Inseguro (Recomendado configurar PLUGGY_WEBHOOK_SECRET)</span>
+                  </span>
+                )}
+
+                {webhookUrl && (webhookUrl.includes('localhost') || webhookUrl.includes('127.0.0.1')) && (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50/70 text-blue-700 border border-blue-200 rounded-full text-[10px] font-semibold dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900/40">
+                    <Info className="w-3.5 h-3.5 shrink-0 text-blue-500" />
+                    <span>Em desenvolvimento (localhost permitido)</span>
+                  </span>
+                )}
+              </div>
+
+              {/* HTTPS Warning Alert */}
+              {webhookUrl && !webhookUrl.startsWith('https://') && !(webhookUrl.includes('localhost') || webhookUrl.includes('127.0.0.1')) && (
+                <div className="p-3 bg-rose-50/80 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 rounded-xl flex gap-2.5 items-start">
+                  <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-bold text-xs text-rose-900 dark:text-rose-200">HTTPS Requerido em Produção</p>
+                    <p className="text-[10px] leading-relaxed text-rose-700 dark:text-rose-350">
+                      A API em produção do Pluggy exige que a URL do Webhook utilize protocolo HTTPS seguro com SSL para processamento eletrônico de callbacks.
+                    </p>
+                  </div>
+                </div>
+              )}
 
               <button
                 type="submit"
                 disabled={isRegisteringWebhook}
-                className="w-full h-10 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                className="w-full h-10 bg-slate-800 hover:bg-slate-900 disabled:opacity-45 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1.5 active:scale-[0.99]"
               >
-                {isRegisteringWebhook ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link className="w-3.5 h-3.5 text-emerald-450 text-emerald-400" />}
+                {isRegisteringWebhook ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link className="w-3.5 h-3.5 text-emerald-400" />}
                 <span>Registrar Webhook operacional</span>
               </button>
             </form>
@@ -1778,7 +1856,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
                   className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md cursor-pointer transition-colors"
                   aria-label="Atualizar webhooks"
                 >
-                  <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                  <RefreshCw className={`w-3.5 h-3.5 text-slate-400 ${isLoadingWebhooks ? 'animate-spin' : ''}`} />
                 </button>
               </div>
 
@@ -1793,9 +1871,9 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
               ) : (
                 <div className="space-y-1.5">
                   {pluggyWebhooks.map((wh) => (
-                    <div key={wh.id} className="p-3 bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-slate-800 rounded-xl flex items-center justify-between gap-3 font-mono text-[10px] text-slate-700 dark:text-slate-355 text-slate-300">
+                    <div key={wh.id} className="p-3 bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-slate-800 rounded-xl flex items-center justify-between gap-3 font-mono text-[10px] text-slate-700 dark:text-slate-300 animate-fadeIn">
                       <div className="min-w-0 pr-1 space-y-1">
-                        <span className="bg-indigo-55 bg-indigo-50/80 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-400 text-[8px] px-1.5 py-0.5 rounded font-bold uppercase">{wh.event}</span>
+                        <span className="bg-indigo-50/80 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-400 text-[8px] px-1.5 py-0.5 rounded font-bold uppercase">{wh.event}</span>
                         <p className="truncate text-slate-400 mt-1 leading-none text-[9px]">{wh.url}</p>
                       </div>
                       <button
@@ -1813,17 +1891,17 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
             </div>
 
             {/* Audit Logs Webhooks */}
-            <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
+            <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2 font-sans text-left">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block font-sans">Logs de Auditoria</span>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Logs de Auditoria</span>
                 <button
                   type="button"
                   onClick={loadCapturedEvents}
                   disabled={isLoadingEvents}
-                  className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded"
-                  aria-label="Atualizar logs de auditoria"
+                  className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-705 border border-slate-200 dark:border-slate-700 text-[10px] font-bold text-slate-600 dark:text-slate-350 rounded-lg flex items-center gap-1.5 cursor-pointer transition-colors"
                 >
-                  <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                  <RefreshCw className={`w-3 h-3 ${isLoadingEvents ? 'animate-spin' : ''}`} />
+                  <span>Atualizar eventos</span>
                 </button>
               </div>
 
@@ -1832,11 +1910,17 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
                   <Loader2 className="w-4 h-4 animate-spin text-slate-500" />
                 </div>
               ) : capturedEvents.length === 0 ? (
-                <div className="p-3 text-center border border-dashed border-slate-200 dark:border-slate-800 text-[11px] text-slate-404 text-slate-450 text-slate-400 italic rounded-xl bg-slate-50/50 leading-relaxed">
-                  Aguardando recepção das primeiras transmissões da Pluggy...
+                <div className="py-8 px-4 text-center border border-dashed border-slate-200 dark:border-slate-800 rounded-xl bg-slate-50/30 dark:bg-black/10 flex flex-col items-center justify-center gap-2.5">
+                  <Activity className="w-6 h-6 text-slate-400 dark:text-slate-600 animate-pulse" />
+                  <div className="space-y-1">
+                    <p className="font-bold text-xs text-slate-700 dark:text-slate-300">Nenhum evento recebido ainda</p>
+                    <p className="text-[10px] text-slate-400 max-w-sm mx-auto leading-relaxed">
+                      Os eventos transmitidos pela API da Pluggy serão registrados aqui em tempo real assim que ocorrerem alterações nas contas vinculadas.
+                    </p>
+                  </div>
                 </div>
               ) : (
-                <div className="space-y-2 max-h-56 overflow-y-auto pr-0.5 font-mono text-[9px]">
+                <div className="space-y-2 max-h-56 overflow-y-auto pr-0.5 font-mono text-[9px] text-left">
                   {capturedEvents.map((evt) => {
                     const dateObj = new Date(evt.receivedAt);
                     const formattedDate = dateObj.toLocaleDateString('pt-BR') + ' ' + dateObj.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });

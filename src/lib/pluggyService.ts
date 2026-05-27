@@ -426,12 +426,16 @@ export class PluggyService {
   /**
    * Registers a new Webhook callback listener URL on Pluggy
    */
-  public static async createWebhook(apiKey: string, event: string, url: string): Promise<any> {
-    console.log(`[PluggyService] Registrando webhook para '${event}' em: ${url}`);
+  public static async createWebhook(apiKey: string, event: string, url: string, headers?: Record<string, string>): Promise<any> {
+    console.log(`[PluggyService] Registrando webhook para '${event}' em: ${url} com headers adicionais:`, headers);
+    const body: any = { event, url };
+    if (headers) {
+      body.headers = headers;
+    }
     return this.request("/webhooks", {
       method: "POST",
       headers: this.getHeaders(apiKey, "application/json"),
-      body: JSON.stringify({ event, url })
+      body: JSON.stringify(body)
     });
   }
 

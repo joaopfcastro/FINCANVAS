@@ -439,6 +439,73 @@ async function runTests() {
     failed++;
   }
 
+  // 19. Sincronização e validação de Webhooks (Auditoria, assinaturas e mapeamentos de status)
+  try {
+    console.log("=== INICIANDO TESTE 19: SINCRONIZAÇÃO E VALIDAÇÃO DE WEBHOOKS ===");
+
+    const evaluateStatus = (event: string, error?: any): string => {
+      let logStatus: "received" | "processed" | "ignored" | "failed" | "requires_user_action" = "received";
+      let errMsg = error;
+      if (errMsg && typeof errMsg === 'object') {
+        errMsg = JSON.stringify(errMsg);
+      } else if (errMsg) {
+        errMsg = String(errMsg);
+      }
+
+      switch (event) {
+        case "item/updated":
+          logStatus = "processed";
+          break;
+        case "item/error":
+          if (errMsg && (errMsg.toLowerCase().includes("user") || errMsg.toLowerCase().includes("mfa") || errMsg.toLowerCase().includes("credentials"))) {
+            logStatus = "requires_user_action";
+          } else {
+            logStatus = "failed";
+          }
+          break;
+        case "item/waiting_user_input":
+        case "item/waiting_user_action":
+          logStatus = "requires_user_action";
+          break;
+        case "item/login_succeeded":
+        case "transactions/created":
+        case "transactions/updated":
+        case "transactions/deleted":
+        case "connector/status_updated":
+          logStatus = "processed";
+          break;
+        default:
+          logStatus = "received";
+          break;
+      }
+      return logStatus;
+    };
+
+    // Assert status parsing rules
+    assert(evaluateStatus("item/updated") === "processed", "item/updated vira status 'processed'");
+    assert(evaluateStatus("item/error", "INVALID_CREDENTIALS") === "requires_user_action", "item/error por credencial inválida vira status 'requires_user_action'");
+    assert(evaluateStatus("item/error", "INTERNAL_SERVER_ERROR") === "failed", "item/error genérico vira status 'failed'");
+    assert(evaluateStatus("item/waiting_user_input") === "requires_user_action", "item/waiting_user_input vira 'requires_user_action'");
+    assert(evaluateStatus("item/waiting_user_action") === "requires_user_action", "item/waiting_user_action vira 'requires_user_action'");
+    assert(evaluateStatus("transactions/created") === "processed", "transactions/created é processado com status 'processed'");
+
+    // Validador de assinaturas (x-fincanvas-webhook-secret)
+    const validateRequestSecret = (incomingSecret: string | undefined, serverSecret: string | undefined): boolean => {
+      if (serverSecret) {
+        return incomingSecret === serverSecret;
+      }
+      return true;
+    };
+
+    assert(validateRequestSecret("invalid", "correct-secret") === false, "Deve rejeitar segredo de webhook inválido");
+    assert(validateRequestSecret("correct-secret", "correct-secret") === true, "Deve aceitar segredo de webhook válido");
+    assert(validateRequestSecret("any", undefined) === true, "Deve aceitar qualquer segredo se PLUGGY_WEBHOOK_SECRET não estiver configurado");
+
+  } catch (err: any) {
+    console.error("Erro no teste 19:", err);
+    failed++;
+  }
+
   console.log(`\n=== RESULTADO DOS TESTES: ${passed} Passaram | ${failed} Falharam ===`);
   if (failed > 0) {
     process.exit(1);
