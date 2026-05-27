@@ -1033,7 +1033,18 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         }
 
         // Check final review status
-        const isCurrentlyReviewed = finalConfidence < ACCEPT_WITH_BADGE;
+        let isCurrentlyReviewed = false;
+        if (isAiApplied) {
+          // Se AI_FALLBACK foi usado, marcar needsReview false apenas se a resposta da IA for válida e categoria existir
+          if (aiMatch && aiMatch.cat && userCategories.includes(aiMatch.cat)) {
+            isCurrentlyReviewed = false;
+          } else {
+            isCurrentlyReviewed = true;
+          }
+        } else {
+          isCurrentlyReviewed = localRec.needsReview || localRec.method === 'REVIEW_REQUIRED' || finalConfidence < ACCEPT_WITH_BADGE;
+        }
+
         if (isCurrentlyReviewed) {
           needsReviewCount++;
         }

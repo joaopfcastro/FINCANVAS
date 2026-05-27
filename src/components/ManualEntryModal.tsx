@@ -83,12 +83,16 @@ export const ManualEntryModal = React.memo(function ManualEntryModal({ isOpen, o
             role: 'user',
             parts: [
               {
-                text: `Extraia detalhadamente os dados desta nota fiscal, recibo ou imagem de transação.
+                text: `Extraia detalhadamente os dados literais e brutos desta nota fiscal, recibo ou imagem de transação.
                 
-Regras de classificação:
-1. Identifique a Categoria: Escolha preferencialmente uma desta lista de categorias cadastradas do usuário: ${JSON.stringify(userCategories)}. Se nenhuma se encaixar minimamente, sugira uma categoria nova iniciando com letra maiúscula (ex: "Pets", "Impostos").
-2. Identifique a Origem/Banco do pagamento se estiver legível (ex: "Nubank", "Itaú", "Inter", "Bradesco", "Santander", "Dinheiro", "Pix").
-3. Limpe e humanize a descrição para que fique clara (ex: "MCDONALDS DT" -> "McDonald's", "SUPERM. CARREFOUR" -> "Carrefour").`
+Diretrizes de extração:
+1. Extraia o nome do estabelecimento ('merchantName') e a descrição literal ('desc').
+2. Extraia o CNPJ, se estiver visível e legível na imagem ('cnpj').
+3. Extraia o valor líquido/total bruto formatado como '123,45' (apenas números e vírgula) representando o valor final ('amount').
+4. Extraia a data no formato DD/MM/YYYY ('date').
+5. Determine o tipo da operação financeira, 'Despesa' ou 'Receita' ('type').
+6. Identifique a origem ou banco emissor se estiver explícito ('source').
+Aviso: Não classifique nenhuma categoria.`
               },
               { inlineData: { data: base64, mimeType: file.type } },
             ],
@@ -100,14 +104,15 @@ Regras de classificação:
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              desc: { type: Type.STRING, description: "Nome limpo do estabelecimento ou transação" },
+              desc: { type: Type.STRING, description: "Descrição literal" },
+              merchantName: { type: Type.STRING, description: "Nome limpo ou marca do estabelecimento" },
+              cnpj: { type: Type.STRING, description: "CNPJ do estabelecimento, se disponível" },
               amount: { type: Type.STRING, description: "Valor total formatado como '123,45' apenas números e vírgula" },
               date: { type: Type.STRING, description: "Data no formato DD/MM/YYYY" },
               type: { type: Type.STRING, description: "'Despesa' ou 'Receita'" },
-              cat: { type: Type.STRING, description: "Categoria inteligente classificada" },
               source: { type: Type.STRING, description: "Origem/Banco da transação, se identificado" }
             },
-            required: ["desc", "amount", "type", "cat"]
+            required: ["desc", "amount", "type"]
           }
         }
       });
@@ -117,31 +122,37 @@ Regras de classificação:
         txt = txt.replace(/```json/g, '').replace(/```/g, '').trim();
         const data = JSON.parse(txt);
         
-        let finalDescription = data.desc || '';
+        let finalDescription = data.merchantName || data.desc || '';
         let finalAmountString = data.amount || '';
-        let finalCategory = data.cat || '';
         let finalSource = data.source || '';
+        let finalCnpj = data.cnpj || null;
         let rawAmount = parseFloat(finalAmountString.replace(',', '.')) || -0.01;
         let detectedDirection = (data.type === 'Receita' ? 'Receita' : 'Despesa') as 'Receita' | 'Despesa';
 
         const rawLocalInput = {
-          description: finalDescription,
+          description: data.desc || finalDescription,
           amount: detectedDirection === 'Despesa' ? -Math.abs(rawAmount) : Math.abs(rawAmount),
           detectedDirection: detectedDirection,
-          source: finalSource || 'Scanner'
+          source: finalSource || 'Scanner',
+          cnpj: finalCnpj,
+          merchant: data.merchantName || null
         };
 
         const localResult = runLocalRecognition(rawLocalInput, [], [], userCategories);
 
+        let finalCategory = 'Outros';
+        let needsReview = true;
+
         if (localResult) {
-          finalCategory = localResult.category || finalCategory || 'Outros';
+          finalCategory = localResult.category || 'Outros';
           finalDescription = localResult.cleanDescription || finalDescription;
+          needsReview = localResult.needsReview;
           setRecognitionMetadata({
             recognitionConfidence: localResult.confidence,
             recognitionMethod: localResult.method,
             recognitionEvidence: localResult.evidence,
             needsReview: localResult.needsReview,
-            aiUsed: true,
+            aiUsed: false,
             merchantKey: localResult.merchantKey
           });
         }
@@ -155,7 +166,12 @@ Regras de classificação:
           cat: finalCategory || prev.cat,
           source: finalSource || prev.source
         }));
-        toast.success("Dados e categorias extraídos por IA e normalizados localmente!");
+
+        if (!needsReview) {
+          toast.success("Dados extraídos por OCR e categorizados localmente");
+        } else {
+          toast.warning("Dados extraídos por OCR; categoria precisa revisão");
+        }
       }
     } catch (err) {
       console.error(err);
