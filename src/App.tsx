@@ -65,6 +65,13 @@ export interface Transaction {
   isLikelyInternalTransfer?: boolean;
   shouldIgnoreInTotals?: boolean;
   needsReview?: boolean;
+  recognitionConfidence?: number;
+  recognitionMethod?: string;
+  recognitionEvidence?: string[];
+  aiUsed?: boolean;
+  aiReason?: string;
+  merchantKey?: string;
+  cleanDescription?: string;
 }
 
 export interface AccountBalance {

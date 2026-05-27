@@ -20,7 +20,8 @@ import { db, auth } from '../firebase';
 import { Transaction, UserProfile } from '../App';
 import { secureGenerateContent, Type } from '../lib/gemini';
 import { toast } from 'sonner';
-import { localRecognize } from '../lib/transactionRecognizer';
+import { runLocalRecognition } from '../lib/recognition/engine/recognitionEngine';
+import { AUTO_ACCEPT, ACCEPT_WITH_BADGE, REVIEW_OR_AI } from '../lib/recognition/constants';
 
 interface ManualEntryModalProps {
   isOpen: boolean;
@@ -116,16 +117,45 @@ Regras de classificação:
         txt = txt.replace(/```json/g, '').replace(/```/g, '').trim();
         const data = JSON.parse(txt);
         
-        if (data.type) setManualType(data.type === 'Receita' ? 'Receita' : 'Despesa');
+        let finalDescription = data.desc || '';
+        let finalAmountString = data.amount || '';
+        let finalCategory = data.cat || '';
+        let finalSource = data.source || '';
+        let rawAmount = parseFloat(finalAmountString.replace(',', '.')) || -0.01;
+        let detectedDirection = (data.type === 'Receita' ? 'Receita' : 'Despesa') as 'Receita' | 'Despesa';
+
+        const rawLocalInput = {
+          description: finalDescription,
+          amount: detectedDirection === 'Despesa' ? -Math.abs(rawAmount) : Math.abs(rawAmount),
+          detectedDirection: detectedDirection,
+          source: finalSource || 'Scanner'
+        };
+
+        const localResult = runLocalRecognition(rawLocalInput, [], [], userCategories);
+
+        if (localResult) {
+          finalCategory = localResult.category || finalCategory || 'Outros';
+          finalDescription = localResult.cleanDescription || finalDescription;
+          setRecognitionMetadata({
+            recognitionConfidence: localResult.confidence,
+            recognitionMethod: localResult.method,
+            recognitionEvidence: localResult.evidence,
+            needsReview: localResult.needsReview,
+            aiUsed: true,
+            merchantKey: localResult.merchantKey
+          });
+        }
+
+        if (data.type) setManualType(detectedDirection);
         setManualForm(prev => ({
           ...prev,
-          desc: data.desc || prev.desc,
-          amount: data.amount || prev.amount,
+          desc: finalDescription || prev.desc,
+          amount: finalAmountString || prev.amount,
           date: data.date && data.date.includes('/') ? data.date : prev.date,
-          cat: data.cat || prev.cat,
-          source: data.source || prev.source
+          cat: finalCategory || prev.cat,
+          source: finalSource || prev.source
         }));
-        toast.success("Dados e categorias extraídos por IA!");
+        toast.success("Dados e categorias extraídos por IA e normalizados localmente!");
       }
     } catch (err) {
       console.error(err);
@@ -171,6 +201,15 @@ Regras de classificação:
 
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
 
+  const [recognitionMetadata, setRecognitionMetadata] = useState<{
+    recognitionConfidence?: number;
+    recognitionMethod?: string;
+    recognitionEvidence?: string[];
+    needsReview?: boolean;
+    aiUsed?: boolean;
+    merchantKey?: string;
+  } | null>(null);
+
   const suggestCategory = async () => {
     if (!manualForm.desc) return;
     setIsSuggesting(true);
@@ -181,27 +220,53 @@ Regras de classificação:
         'Compras Online', 'Assinaturas', 'Outros'
       ];
 
-      // 1. Run local recognition first
       const parsedAmount = parseFloat(manualForm.amount.replace(',', '.')) || -0.01;
-      const localResult = localRecognize({
-        description: manualForm.desc,
-        amount: parsedAmount,
-        detectedDirection: manualType,
-      }, [], userCategories);
+      const finalAmount = manualType === 'Despesa' ? -Math.abs(parsedAmount) : Math.abs(parsedAmount);
 
-      if (localResult && localResult.confidence >= 0.75) {
+      // 1. montar RawTransactionInput
+      const rawInput = {
+        description: manualForm.desc,
+        amount: finalAmount,
+        detectedDirection: manualType,
+        source: manualForm.source || 'Manual'
+      };
+
+      // 2. chamar runLocalRecognition primeiro
+      const localResult = runLocalRecognition(rawInput, [], [], userCategories);
+
+      // 3. se localResult.confidence >= ACCEPT_WITH_BADGE:
+      if (localResult && localResult.confidence >= ACCEPT_WITH_BADGE) {
         setManualForm(prev => ({
           ...prev,
           cat: localResult.category,
           desc: localResult.cleanDescription || prev.desc
         }));
-        toast.success('Categoria e descrição sugeridas localmente!');
+        setRecognitionMetadata({
+          recognitionConfidence: localResult.confidence,
+          recognitionMethod: localResult.method,
+          recognitionEvidence: localResult.evidence,
+          needsReview: localResult.needsReview,
+          aiUsed: false,
+          merchantKey: localResult.merchantKey
+        });
+        toast.success(`Categoria e descrição recomendadas localmente (${Math.round(localResult.confidence * 100)}% de confiança)!`);
         setIsSuggesting(false);
         return;
       }
 
-      // 2. Fallback to Gemini if low confidence
-      const prompt = `Analise a descrição desta transação financeira e classifique-a de forma inteligente.
+      // 4. se confidence < REVIEW_OR_AI: só então chamar IA fallback
+      let finalCat = localResult.category;
+      let finalDesc = localResult.cleanDescription || manualForm.desc;
+      let finalSource = manualForm.source;
+      let usedAi = false;
+      let finalConfidence = localResult.confidence;
+      let finalMethod = localResult.method;
+      let finalEvidence = localResult.evidence;
+      let finalNeedsReview = localResult.needsReview;
+      let finalMerchantKey = localResult.merchantKey;
+
+      if (localResult.confidence < REVIEW_OR_AI) {
+        const prompt = `Analise a descrição desta transação financeira e classifique-a de forma inteligente.
 Descrição: "${manualForm.desc}" (${manualType === 'Receita' ? 'Receita/Entrada' : 'Despesa/Saída'})
 
 Siga estas instruções críticas:
@@ -209,35 +274,62 @@ Siga estas instruções críticas:
 2. Se a descrição contiver nomes poluídos ou abreviações (ex: "POSTO IPIRANGA JACAREI", "IFD*RESTAURANTE", "UBER *TRIP HELP_CENTER"), sugira um nome limpo e amigável (ex: "Posto Ipiranga", "iFood", "Uber").
 3. Se for detectada a origem/banco implícita (ex: "Nubank", "Itaú", "Inter", "Bradesco", "Santander", "Dinheiro", "Pix"), retorne-a no campo correspondente.`;
 
-      const response = await secureGenerateContent({
-        model: 'gemini-3.5-flash',
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              category: { type: Type.STRING, description: "A categoria correspondente" },
-              cleanDescription: { type: Type.STRING, description: "Nome limpo e amigável do estabelecimento" },
-              source: { type: Type.STRING, description: "Banco ou origem de pagamento, se identificado" }
-            },
-            required: ["category", "cleanDescription"]
+        const response = await secureGenerateContent({
+          model: 'gemini-3.5-flash',
+          contents: prompt,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                category: { type: Type.STRING, description: "A categoria correspondente" },
+                cleanDescription: { type: Type.STRING, description: "Nome limpo e amigável do estabelecimento" },
+                source: { type: Type.STRING, description: "Banco ou origem de pagamento, se identificado" }
+              },
+              required: ["category", "cleanDescription"]
+            }
+          }
+        });
+
+        if (response.text) {
+          let txt = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
+          const data = JSON.parse(txt);
+          if (data.category) {
+            finalCat = data.category;
+            finalDesc = data.cleanDescription || finalDesc;
+            if (data.source) {
+              finalSource = data.source;
+            }
+            usedAi = true;
+            finalConfidence = 0.95; // AI confidence booster
+            finalMethod = 'AI_FALLBACK';
+            finalEvidence = ['Mapeado e Higienizado por Inteligência Artificial (Gemini Fallback)'];
+            finalNeedsReview = false;
           }
         }
+      } else {
+        // Between REVIEW_OR_AI and ACCEPT_WITH_BADGE, we use local suggestions as "Probable"
+        toast.info(`Sugerido localmente ("Provável" - ${Math.round(localResult.confidence * 100)}%)`);
+      }
+
+      setManualForm(prev => ({
+        ...prev,
+        cat: finalCat,
+        desc: finalDesc,
+        source: finalSource || prev.source
+      }));
+
+      setRecognitionMetadata({
+        recognitionConfidence: finalConfidence,
+        recognitionMethod: finalMethod,
+        recognitionEvidence: finalEvidence,
+        needsReview: finalNeedsReview,
+        aiUsed: usedAi,
+        merchantKey: finalMerchantKey
       });
 
-      if (response.text) {
-        let txt = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
-        const data = JSON.parse(txt);
-        if (data.category) {
-          setManualForm(prev => ({
-            ...prev,
-            cat: data.category,
-            desc: data.cleanDescription || prev.desc,
-            source: data.source || prev.source
-          }));
-          toast.success('Categoria e descrição refinadas com Inteligência Artificial!');
-        }
+      if (usedAi) {
+        toast.success('Categoria e descrição refinadas com Inteligência Artificial!');
       }
     } catch (e) {
       console.error(e);
@@ -258,6 +350,14 @@ Siga estas instruções críticas:
         amount: Math.abs(transaction.amount).toString().replace('.', ','),
         source: transaction.source
       });
+      setRecognitionMetadata({
+        recognitionConfidence: transaction.recognitionConfidence,
+        recognitionMethod: transaction.recognitionMethod,
+        recognitionEvidence: transaction.recognitionEvidence,
+        needsReview: transaction.needsReview,
+        aiUsed: transaction.aiUsed,
+        merchantKey: transaction.merchantKey
+      });
     } else {
       setManualForm({
         date: new Date().toLocaleDateString('pt-BR'),
@@ -267,6 +367,7 @@ Siga estas instruções críticas:
         source: ''
       });
       setManualType('Despesa');
+      setRecognitionMetadata(null);
     }
   }, [transaction, isOpen]);
 
@@ -304,7 +405,14 @@ Siga estas instruções críticas:
         amount: finalAmount,
         type: manualType,
         userId: currentUserId,
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
+        // Add robust recognition metrics
+        recognitionConfidence: recognitionMetadata?.recognitionConfidence ?? 1.0,
+        recognitionMethod: recognitionMetadata?.recognitionMethod ?? 'MANUAL_ENTRY',
+        recognitionEvidence: recognitionMetadata?.recognitionEvidence ?? ['Inserido ou editado manualmente'],
+        needsReview: recognitionMetadata?.needsReview ?? false,
+        aiUsed: recognitionMetadata?.aiUsed ?? false,
+        merchantKey: recognitionMetadata?.merchantKey ?? ''
       };
 
       if (transaction && transaction.id) {
@@ -611,6 +719,36 @@ Siga estas instruções críticas:
                 </datalist>
               </div>
             </div>
+
+            {recognitionMetadata && (
+              <div className="flex flex-wrap gap-1.5 pt-1 px-1">
+                {recognitionMetadata.recognitionMethod === 'USER_RULE' && (
+                  <span className="bg-indigo-50 text-indigo-700 border border-indigo-100 text-[10px] uppercase font-black tracking-wider px-2.5 py-1 rounded-lg flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-indigo-600" /> Regra Aprendida
+                  </span>
+                )}
+                {recognitionMetadata.recognitionMethod !== 'USER_RULE' && recognitionMetadata.recognitionMethod !== 'AI_FALLBACK' && (recognitionMetadata.recognitionConfidence || 0) >= 0.90 && (
+                  <span className="bg-emerald-50 text-emerald-700 border border-emerald-100 text-[10px] uppercase font-black tracking-wider px-2.5 py-1 rounded-lg flex items-center gap-1">
+                    ✓ Reconhecido Localmente
+                  </span>
+                )}
+                {recognitionMetadata.recognitionConfidence !== undefined && recognitionMetadata.recognitionConfidence >= 0.60 && recognitionMetadata.recognitionConfidence < 0.90 && recognitionMetadata.recognitionMethod !== 'AI_FALLBACK' && (
+                  <span className="bg-blue-50 text-blue-700 border border-blue-100 text-[10px] uppercase font-black tracking-wider px-2.5 py-1 rounded-lg">
+                    ⚡ Provável
+                  </span>
+                )}
+                {recognitionMetadata.needsReview && (
+                  <span className="bg-amber-50 text-amber-700 border border-amber-200 text-[10px] uppercase font-black tracking-wider px-2.5 py-1 rounded-lg animate-pulse">
+                    ⚠ Precisa Revisar
+                  </span>
+                )}
+                {recognitionMetadata.aiUsed && (
+                  <span className="bg-purple-50 text-purple-700 border border-purple-100 text-[10px] uppercase font-black tracking-wider px-2.5 py-1 rounded-lg flex items-center gap-1">
+                    ✦ IA Usada
+                  </span>
+                )}
+              </div>
+            )}
 
           </div>
           <div 

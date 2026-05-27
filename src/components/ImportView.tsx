@@ -5,7 +5,8 @@ import { db, handleFirestoreError, OperationType } from '../firebase';
 import { Transaction, UserProfile } from '../App';
 import { secureGenerateContent, Type } from '../lib/gemini';
 import { toast } from 'sonner';
-import { localRecognize } from '../lib/transactionRecognizer';
+import { runLocalRecognition } from '../lib/recognition/engine/recognitionEngine';
+import { AUTO_ACCEPT, ACCEPT_WITH_BADGE, REVIEW_OR_AI } from '../lib/recognition/constants';
 
 function normalizeText(text: string): string {
   if (!text) return '';
@@ -168,11 +169,11 @@ export const ImportView = React.memo(function ImportView({ userId, onNavigateDas
         if (nameLower.endsWith('.ofx') || nameLower.endsWith('.xml')) {
           const text = await file.text();
           const parsed = parseOFX(text);
-          localTransactions.push(...parsed);
+          localTransactions.push(...parsed.map(t => ({ ...t, isAiExtracted: false })));
         } else if (nameLower.endsWith('.csv')) {
           const text = await file.text();
           const parsed = parseCSV(text);
-          localTransactions.push(...parsed);
+          localTransactions.push(...parsed.map(t => ({ ...t, isAiExtracted: false })));
         } else {
           aiFiles.push(file);
         }
@@ -222,7 +223,8 @@ Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, 
 
         const text = response.text || "[]";
         try {
-          aiTransactions = JSON.parse(text);
+          const parsedList = JSON.parse(text);
+          aiTransactions = parsedList.map((t: any) => ({ ...t, isAiExtracted: true }));
         } catch (e) {
           console.error("Failed to parse AI output:", text);
         }
@@ -233,11 +235,12 @@ Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, 
 
       // Run ALL extracted entries through local validation funnel
       const generatedTransactions = rawExtractedList.map(item => {
-        const localRec = localRecognize({
+        const localRec = runLocalRecognition({
           description: item.desc,
           amount: item.amount,
           detectedDirection: item.type as 'Receita' | 'Despesa',
-        }, [], userCategories);
+          source: item.source || 'Importação'
+        }, [], [], userCategories);
 
         return {
           date: item.date,
@@ -247,8 +250,16 @@ Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, 
           amount: item.amount,
           source: item.source || 'Importação',
           directionConfidence: localRec.confidence,
-          directionReason: localRec.evidence,
-          needsReview: localRec.needsReview
+          directionReason: localRec.evidence.join(' | '),
+          
+          // Modern recognition parameters
+          recognitionConfidence: localRec.confidence,
+          recognitionMethod: item.isAiExtracted ? 'AI_FALLBACK' : localRec.method,
+          recognitionEvidence: item.isAiExtracted ? ['Extraído por IA visual (OCR / Imagem)'] : localRec.evidence,
+          needsReview: localRec.needsReview,
+          aiUsed: item.isAiExtracted,
+          merchantKey: localRec.merchantKey,
+          cleanDescription: localRec.cleanDescription || item.desc
         };
       });
       
@@ -319,13 +330,36 @@ Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, 
       
       clearInterval(progressInterval);
       setProgress(100);
+
+      // Extract statistics for beautiful summary output
+      let localRecognizedCount = 0;
+      let aiFallbackAppliedCount = 0;
+      let needsReviewTransactionsCount = 0;
+
+      for (const item of transactionsToInsert) {
+        if (item.aiUsed) {
+          aiFallbackAppliedCount++;
+        } else {
+          localRecognizedCount++;
+        }
+        if (item.needsReview) {
+          needsReviewTransactionsCount++;
+        }
+      }
       
       if (transactionsToInsert.length === 0) {
         toast.info(`Nenhuma nova transação foi importada. Todas as ${duplicateCount} transações já existem no sistema!`);
-      } else if (duplicateCount > 0) {
-        toast.success(`${transactionsToInsert.length} novas transações importadas. ${duplicateCount} duplicadas foram detectadas e desconsideradas.`);
       } else {
-        toast.success(`${transactionsToInsert.length} transações processadas com sucesso!`);
+        const summaryMsg = `Importação concluída:
+- ${localRecognizedCount} reconhecidas localmente
+- ${aiFallbackAppliedCount} por IA fallback
+- ${needsReviewTransactionsCount} precisam revisão`;
+        
+        toast.success(<div className="whitespace-pre-line font-medium text-xs">{summaryMsg}</div>, { duration: 6000 });
+        
+        if (duplicateCount > 0) {
+          toast.info(`${duplicateCount} duplicadas foram detectadas e desconsideradas.`);
+        }
       }
       setTimeout(() => {
         setLoading(false);
@@ -357,7 +391,9 @@ Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, 
               <UploadCloud className="w-8 h-8" />
             </div>
             <h2 className="text-sm font-bold text-slate-800 mb-2">Importe seus Arquivos</h2>
-            <p className="text-xs text-slate-500 mb-6">Envie múltiplos PDFs, imagens ou arquivos OFX. Várias IAs em conjunto extrairão e categorizarão os dados.</p>
+            <p className="text-xs text-slate-500 mb-6">
+              O FINCANVAS tenta reconhecer seus lançamentos localmente. A IA só será usada em itens incertos ou arquivos sem texto estruturado.
+            </p>
             
             <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
               <input type="file" id="file-upload" className="hidden" multiple accept="image/*,.pdf,.ofx,text/xml" onChange={handleFileChange} />
@@ -393,7 +429,7 @@ Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, 
 
           {(files.length > 0 || loading) && (
             <button onClick={handleProcess} disabled={loading || files.length === 0} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 min-h-[48px] rounded-2xl transition-all shadow-md active:scale-[0.98] flex justify-center items-center text-sm disabled:opacity-70 disabled:cursor-not-allowed">
-              {loading ? <><Cpu className="w-5 h-5 mr-2 animate-spin" /> Processando com IA...</> : 'Processar Documentos com IA'}
+              {loading ? <><Cpu className="w-5 h-5 mr-2 animate-spin" /> Reconhecendo transações...</> : 'Processar Documentos'}
             </button>
           )}
 
@@ -406,7 +442,7 @@ Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, 
               <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
                 <div className="h-full bg-emerald-500 transition-all duration-300" style={{ width: `${progress}%` }}></div>
               </div>
-              <p className="text-[10px] text-center text-slate-500 uppercase tracking-widest font-bold">Lendo documento • IA de visão computacional • Categorização contextual</p>
+              <p className="text-[10px] text-center text-slate-500 uppercase tracking-widest font-bold">Processando arquivos • Reconhecimento Inteligente FINCANVAS</p>
             </div>
           )}
 

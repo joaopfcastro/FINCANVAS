@@ -9,7 +9,16 @@ import {
   classifyPluggyDirection, 
   cleanDescriptionLocally 
 } from "./src/lib/pluggyNormalizer";
-import { localRecognize, RawTransactionInput, LearnedRule } from "./src/lib/transactionRecognizer";
+interface LearnedRule {
+  id?: string;
+  userId: string;
+  merchantKey: string;
+  category: string;
+  cleanDescription: string;
+  type: 'Receita' | 'Despesa';
+  createdAt?: any;
+  updatedAt?: any;
+}
 import { runLocalRecognition } from "./src/lib/recognition/engine/recognitionEngine";
 import { AUTO_ACCEPT, ACCEPT_WITH_BADGE, REVIEW_OR_AI } from "./src/lib/recognition/constants";
 import { RawTransactionInput as NewRawInput, UserRecognitionRule } from "./src/lib/recognition/types";
@@ -949,6 +958,10 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       // Compute precise statistics
       let userRulesCount = 0;
       let descriptionMatchCount = 0;
+      let merchantRulesCount = 0;
+      let mccCount = 0;
+      let pluggyCategoryCount = 0;
+      let operationTypeCount = 0;
       let localAutoCount = 0;
       let localProbableCount = 0;
       let aiFallbackCount = 0;
@@ -990,18 +1003,26 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
           userRulesCount++;
         } else if (localRec.method === 'DESCRIPTION_MATCH') {
           descriptionMatchCount++;
+        } else if (localRec.method === 'MERCHANT_CNPJ' || localRec.method === 'MERCHANT_ALIAS') {
+          merchantRulesCount++;
+        } else if (localRec.method === 'MCC') {
+          mccCount++;
+        } else if (localRec.method === 'PLUGGY_CATEGORY') {
+          pluggyCategoryCount++;
+        } else if (localRec.method === 'OPERATION_TYPE') {
+          operationTypeCount++;
         }
 
         // Check categorisation source
         let isAiApplied = false;
         let finalConfidence = localRec.confidence;
-        let finalReason = localRec.evidence.join(' | ');
+        let finalEvidence = [...localRec.evidence];
 
         if (aiMatch) {
           isAiApplied = true;
           aiFallbackCount++;
           finalConfidence = 0.95; // AI confidence booster
-          finalReason = "Mapeado e Higienizado por Inteligência Artificial (Gemini Fallback)";
+          finalEvidence = ["Mapeado e Higienizado por Inteligência Artificial (Gemini Fallback)"];
         } else {
           // Local stats breakdown
           if (localRec.confidence >= AUTO_ACCEPT) {
@@ -1016,6 +1037,8 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         if (isCurrentlyReviewed) {
           needsReviewCount++;
         }
+
+        const finalMethod = isAiApplied ? 'AI_FALLBACK' : localRec.method;
 
         return {
           pluggyId: tx.pluggyId,
@@ -1039,23 +1062,33 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
           merchant: tx.merchantName,
           detectedDirection: tx.detectedDirection,
           directionConfidence: finalConfidence,
-          directionReason: finalReason,
-          isLikelyInternalTransfer: localRec.isLikelyInternalTransfer,
-          shouldIgnoreInTotals: localRec.shouldIgnoreInTotals,
+          directionReason: finalEvidence.join(' | '),
+          
+          // Modern recognition parameters
+          recognitionConfidence: finalConfidence,
+          recognitionMethod: finalMethod,
+          recognitionEvidence: finalEvidence,
           needsReview: isCurrentlyReviewed,
           aiUsed: isAiApplied,
-          method: localRec.method
+          merchantKey: localRec.merchantKey,
+          cleanDescription: finalDesc,
+          isLikelyInternalTransfer: localRec.isLikelyInternalTransfer,
+          shouldIgnoreInTotals: localRec.shouldIgnoreInTotals
         };
       });
 
       const recognitionStats = {
         total: rawTransactionsBatch.length,
-        userRules: userRulesCount,
-        descriptionMatch: descriptionMatchCount,
         localAuto: localAutoCount,
         localProbable: localProbableCount,
         aiFallback: aiFallbackCount,
         needsReview: needsReviewCount,
+        userRules: userRulesCount,
+        descriptionMatch: descriptionMatchCount,
+        merchantRules: merchantRulesCount,
+        mcc: mccCount,
+        pluggyCategory: pluggyCategoryCount,
+        operationType: operationTypeCount,
         internalTransfers: internalTransfersCount,
         ignoredInTotals: ignoredInTotalsCount
       };
