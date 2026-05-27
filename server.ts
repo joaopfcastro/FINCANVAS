@@ -23,8 +23,87 @@ import { runLocalRecognition } from "./src/lib/recognition/engine/recognitionEng
 import { mapToUserCategory } from "./src/lib/recognition/taxonomy/mapToUserCategory";
 import { AUTO_ACCEPT, ACCEPT_WITH_BADGE, REVIEW_OR_AI } from "./src/lib/recognition/constants";
 import { RawTransactionInput as NewRawInput, UserRecognitionRule } from "./src/lib/recognition/types";
+import admin from "firebase-admin";
+import fs from "fs";
 
 dotenv.config();
+
+// Read firebase Applet config for Admin SDK initialisation
+const firebaseConfig = JSON.parse(
+  fs.readFileSync(path.join(process.cwd(), "firebase-applet-config.json"), "utf8")
+);
+
+if (admin.apps.length === 0) {
+  try {
+    admin.initializeApp({
+      projectId: firebaseConfig.projectId,
+    });
+  } catch (err: any) {
+    console.warn("Firebase Admin failed default initialization. Trying with defaults:", err.message);
+    admin.initializeApp();
+  }
+}
+
+const db = admin.firestore();
+
+/**
+ * Backend authentication middleware that validates the Authorization Bearer ID Token.
+ * Sets req.user = { uid, email } and rejects unauthorized requests with 401.
+ */
+const requireAuth = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Unauthorized: Missing Authorization Bearer Token" });
+  }
+
+  const idToken = authHeader.split("Bearer ")[1];
+  try {
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    (req as any).user = {
+      uid: decodedToken.uid,
+      email: decodedToken.email,
+    };
+    next();
+  } catch (error: any) {
+    console.error("[requireAuth Error]:", error.message);
+    return res.status(401).json({ error: "Unauthorized: Invalid or expired Firebase ID Token" });
+  }
+};
+
+/**
+ * Persists ownership mapping information for a synchronized/validated itemId.
+ * Standardizes security by creating a global lookup index and a per-user subcollection log.
+ */
+async function recordItemOwnership(uid: string, itemId: string, email?: string) {
+  try {
+    const updatedAt = admin.firestore.FieldValue.serverTimestamp();
+    // Save to global lookup index
+    await db.collection("pluggyItemIndex").doc(itemId).set({
+      uid,
+      itemId,
+      email: email || "",
+      updatedAt
+    }, { merge: true });
+
+    // Save to users/{uid}/pluggyItems/{itemId} subcollection
+    await db.collection("users").doc(uid).collection("pluggyItems").doc(itemId).set({
+      uid,
+      itemId,
+      updatedAt
+    }, { merge: true });
+
+    // Save under legacy subcollection users/{uid}/pluggy/items/{itemId} for absolute compliance
+    await db.collection("users").doc(uid).collection("pluggy").doc("items").collection("list").doc(itemId).set({
+      uid,
+      itemId,
+      updatedAt
+    }, { merge: true });
+
+    console.log(`[Item Ownership Index] Successfully mapped item: ${itemId} -> user: ${uid}`);
+  } catch (err: any) {
+    console.error(`[Item Ownership Index Error] Failed registering itemId ${itemId}:`, err.message);
+  }
+}
 
 // In-memory registry of received Pluggy webhook events for developer diagnostics
 interface PluggyWebhookEventLog {
@@ -331,13 +410,44 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
 
   // Helper to retrieve and validate Pluggy credentials securely in backend
-  const getPluggyCredentialsOrThrow = (req?: express.Request) => {
-    let clientId = req?.headers["x-pluggy-client-id"] as string;
-    let clientSecret = req?.headers["x-pluggy-client-secret"] as string;
+  const getPluggyCredentialsOrThrow = async (req?: express.Request) => {
+    let uid = (req as any)?.user?.uid;
+    let clientId: string | undefined;
+    let clientSecret: string | undefined;
 
-    if (!clientId && req?.body) {
-      clientId = req.body.pluggyClientId || req.body.clientId;
-      clientSecret = req.body.pluggyClientSecret || req.body.clientSecret;
+    // First try: Load from users/{uid}/secrets/pluggy
+    if (uid) {
+      try {
+        const secretDoc = await db.collection("users").doc(uid).collection("secrets").doc("pluggy").get();
+        if (secretDoc.exists) {
+          const sData = secretDoc.data();
+          clientId = sData?.clientId || sData?.pluggyClientId;
+          clientSecret = sData?.clientSecret || sData?.pluggyClientSecret;
+          console.log(`[Pluggy Credentials] Loaded custom user-specific credentials for uid: ${uid}`);
+        }
+      } catch (err: any) {
+        console.warn(`[Pluggy Credentials] Failed reading private secret collection for uid ${uid}:`, err.message);
+      }
+    }
+
+    // Second try: fallback to headers or body from request
+    if (!clientId && req) {
+      clientId = req.headers["x-pluggy-client-id"] as string;
+      clientSecret = req.headers["x-pluggy-client-secret"] as string;
+
+      if (!clientId && req.body) {
+        clientId = req.body.pluggyClientId || req.body.clientId;
+        clientSecret = req.body.pluggyClientSecret || req.body.clientSecret;
+      }
+    }
+
+    // Third try: fallback to server global environment
+    if (!clientId) {
+      clientId = process.env.PLUGGY_CLIENT_ID;
+      clientSecret = process.env.PLUGGY_CLIENT_SECRET;
+      if (clientId) {
+        console.log(`[Pluggy Credentials] Falling back to server global environment credentials.`);
+      }
     }
 
     clientId = clientId?.trim();
@@ -354,10 +464,10 @@ async function startServer() {
   const isUuid = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id || "");
 
   // 0. Check secure credentials status
-  app.get("/api/pluggy/credentials_status", (req, res) => {
+  app.get("/api/pluggy/credentials_status", requireAuth, async (req, res) => {
     const webhookSecretConfigured = !!process.env.PLUGGY_WEBHOOK_SECRET;
     try {
-      getPluggyCredentialsOrThrow(req);
+      await getPluggyCredentialsOrThrow(req);
       res.json({ configured: true, webhookSecretConfigured });
     } catch {
       res.json({ configured: false, webhookSecretConfigured });
@@ -365,9 +475,9 @@ async function startServer() {
   });
 
   // 1. Testar Credenciais da API Privada do Pluggy
-  app.post("/api/pluggy/test", async (req, res) => {
+  app.post("/api/pluggy/test", requireAuth, async (req, res) => {
     try {
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
+      const { clientId, clientSecret } = await getPluggyCredentialsOrThrow(req);
       await PluggyService.authenticate(clientId, clientSecret);
       res.json({ success: true, message: "Par de chaves do Pluggy validado com sucesso!" });
     } catch (err: any) {
@@ -377,21 +487,43 @@ async function startServer() {
   });
 
   // 1.1 Listar conexões (items) ativas do Pluggy
-  app.post("/api/pluggy/list_items", async (req, res) => {
+  app.post("/api/pluggy/list_items", requireAuth, async (req: any, res) => {
     try {
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
+      const { clientId, clientSecret } = await getPluggyCredentialsOrThrow(req);
       const { itemIds } = req.body;
+      const uid = req.user.uid;
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
-      
+
+      // Verify what itemIds user profile contains, or lookup
+      const userProfileSnap = await db.collection("users").doc(uid).get();
+      const userProfileItemIds: string[] = userProfileSnap.exists ? (userProfileSnap.data()?.pluggyItemIds || []) : [];
+
       let items: any[] = [];
       let globalListingRestricted = false;
       let requiresManualItemId = false;
 
       const listIds: string[] = Array.isArray(itemIds) ? itemIds.filter(Boolean) : [];
 
-      if (listIds.length > 0) {
-        console.log(`[Pluggy list_items] Fetching specific item IDs:`, listIds);
-        for (const id of listIds) {
+      // Zero-Trust Guard: If client requests specific IDs, verify ownership of all
+      const checkedIds: string[] = [];
+      for (const id of listIds) {
+        if (userProfileItemIds.includes(id)) {
+          checkedIds.push(id);
+        } else {
+          // Fallback to checking the index
+          const indexSnap = await db.collection("pluggyItemIndex").doc(id).get();
+          if (indexSnap.exists && indexSnap.data()?.uid === uid) {
+            checkedIds.push(id);
+          } else {
+            console.warn(`[Zero-Trust] Blocked list_items query for item: ${id} by unauthorized uid: ${uid}`);
+            return res.status(403).json({ error: "Access Denied: You do not own this connection." });
+          }
+        }
+      }
+
+      if (checkedIds.length > 0) {
+        console.log(`[Pluggy list_items] Fetching specific authorized item IDs:`, checkedIds);
+        for (const id of checkedIds) {
           try {
             const item = await PluggyService.getItem(apiKey, id);
             items.push(item);
@@ -400,20 +532,46 @@ async function startServer() {
           }
         }
       } else {
-        try {
-          items = await PluggyService.listItems(apiKey);
-        } catch (listErr: any) {
-          console.warn("[Pluggy list_items] Global workspace listing failed or restricted:", listErr.message);
-          globalListingRestricted = true;
-          requiresManualItemId = true;
-          return res.json({
-            ok: true,
-            success: true,
-            items: [],
-            globalListingRestricted: true,
-            requiresManualItemId: true,
-            message: "Credenciais OK, mas sua conta não permite listagem de todos os items de forma global. Adicione o seu Item ID de conexão manual na aba de preferências para começar."
-          });
+        // Fallback: list only user-owned items from their profile/index
+        if (userProfileItemIds.length > 0) {
+          for (const id of userProfileItemIds) {
+            try {
+              const item = await PluggyService.getItem(apiKey, id);
+              items.push(item);
+            } catch (err: any) {
+              console.warn(`[Pluggy list_items] Sinking single user item read ${id}:`, err.message);
+            }
+          }
+        } else {
+          try {
+            // Check global index too
+            const indexQuery = await db.collection("pluggyItemIndex").where("uid", "==", uid).get();
+            if (!indexQuery.empty) {
+              for (const doc of indexQuery.docs) {
+                try {
+                  const item = await PluggyService.getItem(apiKey, doc.id);
+                  items.push(item);
+                } catch (e: any) {
+                  console.warn(`[Pluggy list_items] Index item read failed ${doc.id}:`, e.message);
+                }
+              }
+            } else {
+              // Attempt global list ONLY if no manual connections exist and workspace permits it
+              items = await PluggyService.listItems(apiKey);
+            }
+          } catch (listErr: any) {
+            console.warn("[Pluggy list_items] Global workspace listing failed or restricted:", listErr.message);
+            globalListingRestricted = true;
+            requiresManualItemId = true;
+            return res.json({
+              ok: true,
+              success: true,
+              items: [],
+              globalListingRestricted: true,
+              requiresManualItemId: true,
+              message: "Credenciais OK, mas sua conta não permite listagem de todos os items de forma global. Adicione o seu Item ID de conexão manual na aba de preferências para começar."
+            });
+          }
         }
       }
 
@@ -425,15 +583,33 @@ async function startServer() {
   });
 
   // 1.2 Deletar uma conexão (item) no Pluggy
-  app.post("/api/pluggy/delete_item", async (req, res) => {
+  app.post("/api/pluggy/delete_item", requireAuth, async (req: any, res) => {
     const { itemId } = req.body;
+    const uid = req.user.uid;
     if (!itemId) {
       return res.status(400).json({ error: "Item ID é um parâmetro obrigatório de exclusão." });
     }
+
+    // Zero-Trust: Confirm ownership of the item before deletion
+    const indexSnap = await db.collection("pluggyItemIndex").doc(itemId).get();
+    const userProfileSnap = await db.collection("users").doc(uid).get();
+    const userItemIds: string[] = userProfileSnap.exists ? (userProfileSnap.data()?.pluggyItemIds || []) : [];
+
+    if (!userItemIds.includes(itemId) && (!indexSnap.exists || indexSnap.data()?.uid !== uid)) {
+      console.warn(`[Zero-Trust Block] Unauthorized delete attempt for itemId: ${itemId} by uid: ${uid}`);
+      return res.status(403).json({ error: "Access Denied: You do not own this connection." });
+    }
+
     try {
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
+      const { clientId, clientSecret } = await getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       await PluggyService.deleteItem(apiKey, itemId);
+
+      // Clean up index/profile mapping
+      await db.collection("pluggyItemIndex").doc(itemId).delete().catch(() => {});
+      await db.collection("users").doc(uid).collection("pluggyItems").doc(itemId).delete().catch(() => {});
+      await db.collection("users").doc(uid).collection("pluggy").doc("items").collection("list").doc(itemId).delete().catch(() => {});
+
       res.json({ success: true, message: "Conexão deletada com sucesso!" });
     } catch (err: any) {
       console.error("[Pluggy delete_item HTTP Router Error]:", err.message);
@@ -442,9 +618,11 @@ async function startServer() {
   });
 
   // 1.2.1 Validar Item ID de conexão manual
-  app.post("/api/pluggy/validate_item", async (req, res) => {
+  app.post("/api/pluggy/validate_item", requireAuth, async (req: any, res) => {
     try {
       const { itemId } = req.body;
+      const uid = req.user.uid;
+      const email = req.user.email;
 
       if (!itemId || !isUuid(itemId)) {
         return res.status(400).json({
@@ -454,9 +632,12 @@ async function startServer() {
         });
       }
 
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
+      const { clientId, clientSecret } = await getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       const item = await PluggyService.getItem(apiKey, itemId);
+
+      // Successfully validated. Record server-side ownership.
+      await recordItemOwnership(uid, itemId, email);
 
       return res.json({
         ok: true,
@@ -496,12 +677,16 @@ async function startServer() {
   });
 
   // 1.2.2 Gerar Token de Conectividade do Widget Pluggy Connect
-  app.post("/api/pluggy/connect_token", async (req, res) => {
+  app.post("/api/pluggy/connect_token", requireAuth, async (req: any, res) => {
     try {
-      const { clientUserId, itemId } = req.body;
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
+      const { itemId, webhookUrl: customWebhook } = req.body;
+      const uid = req.user.uid;
+      const { clientId, clientSecret } = await getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
-      const data = await PluggyService.createConnectToken(apiKey, clientUserId, itemId);
+
+      // Force req.user.uid as clientUserId when generating token with Pluggy. Clean.
+      const webhookUrl = customWebhook || process.env.PLUGGY_WEBHOOK_URL;
+      const data = await PluggyService.createConnectToken(apiKey, uid, itemId, { webhookUrl });
       res.json({ success: true, connectToken: data.accessToken || data.token || data.connectToken });
     } catch (err: any) {
       console.error("[Pluggy connect_token HTTP Router Error]:", err.message);
@@ -510,7 +695,7 @@ async function startServer() {
   });
 
   // 1.3 Adicionar um canal de diagnóstico ao vivo da Pluggy
-  app.post("/api/pluggy/diagnose", async (req, res) => {
+  app.post("/api/pluggy/diagnose", requireAuth, async (req: any, res) => {
     const { itemIds } = req.body;
     
     const logs: string[] = [];
@@ -527,7 +712,7 @@ async function startServer() {
       steps[0].status = "RUNNING";
       logs.push("[Passo 1] Analisando existência e preenchimento das credenciais do servidor...");
       
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
+      const { clientId, clientSecret } = await getPluggyCredentialsOrThrow(req);
       const cleanId = clientId.trim().replace(/[\r\n\t\s]/g, "");
       const cleanSecret = clientSecret.trim().replace(/[\r\n\t\s]/g, "");
 
@@ -652,10 +837,10 @@ async function startServer() {
   });
 
   // 2. Criar Conexão de Teste (Itaú Sandbox) programaticamente no Pluggy
-  app.post("/api/pluggy/create_sandbox", async (req, res) => {
+  app.post("/api/pluggy/create_sandbox", requireAuth, async (req: any, res) => {
     const { bankConnectorId } = req.body;
     try {
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
+      const { clientId, clientSecret } = await getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       const itemData = await PluggyService.createSandbox(apiKey, bankConnectorId || 2);
       res.json({ success: true, item: itemData });
@@ -666,13 +851,13 @@ async function startServer() {
   });
 
   // 2.1 Cadastrar Webhook no Pluggy
-  app.post("/api/pluggy/create_webhook", async (req, res) => {
+  app.post("/api/pluggy/create_webhook", requireAuth, async (req: any, res) => {
     const { event, url } = req.body;
     if (!url) {
       return res.status(400).json({ error: "É necessário fornecer um URL para o webhook." });
     }
     try {
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
+      const { clientId, clientSecret } = await getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       
       const customHeaders: Record<string, string> = {};
@@ -696,9 +881,9 @@ async function startServer() {
   });
 
   // 2.2 Listar Webhooks cadastrados no Pluggy
-  app.post("/api/pluggy/list_webhooks", async (req, res) => {
+  app.post("/api/pluggy/list_webhooks", requireAuth, async (req: any, res) => {
     try {
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
+      const { clientId, clientSecret } = await getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       const webhooks = await PluggyService.listWebhooks(apiKey);
       res.json({ success: true, webhooks });
@@ -709,13 +894,13 @@ async function startServer() {
   });
 
   // 2.3 Excluir Webhook cadastrado no Pluggy
-  app.post("/api/pluggy/delete_webhook", async (req, res) => {
+  app.post("/api/pluggy/delete_webhook", requireAuth, async (req: any, res) => {
     const { webhookId } = req.body;
     if (!webhookId) {
       return res.status(400).json({ error: "O ID do webhook é obrigatório para exclusão." });
     }
     try {
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
+      const { clientId, clientSecret } = await getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       await PluggyService.deleteWebhook(apiKey, webhookId);
       res.json({ success: true, message: "Webhook excluído com sucesso do Pluggy!" });
@@ -725,16 +910,40 @@ async function startServer() {
     }
   });
 
-  // 2.4 Listar logs de eventos recebidos
-  app.get("/api/pluggy/webhook_events", (req, res) => {
-    res.json({ success: true, events: receivedWebhookEvents });
+  // 2.4 Listar logs de eventos recebidos (Filtrados por usuário atual no Firestore)
+  app.get("/api/pluggy/webhook_events", requireAuth, async (req: any, res) => {
+    try {
+      const uid = req.user.uid;
+      const snap = await db.collection("users").doc(uid).collection("pluggyWebhookEvents").orderBy("receivedAt", "desc").limit(50).get();
+      const events: any[] = [];
+      snap.forEach(docSnap => {
+        const d = docSnap.data();
+        events.push({
+          id: docSnap.id,
+          event: d.event,
+          itemId: d.itemId,
+          transactionIds: d.transactionIds,
+          clientUserId: d.clientUserId,
+          triggeredBy: d.triggeredBy,
+          receivedAt: d.receivedAt,
+          status: d.status,
+          itemStatus: d.itemStatus,
+          rawBody: d.rawBody,
+          error: d.error
+        });
+      });
+      res.json({ success: true, events });
+    } catch (err: any) {
+      console.error("[Pluggy webhook_events Router Error]:", err.message);
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // 2.5 Listener de Webhook: Chamado externamente pela Pluggy
   app.post("/api/pluggy/webhook_listener", async (req, res) => {
     const webhookSecret = process.env.PLUGGY_WEBHOOK_SECRET;
     if (webhookSecret) {
-      const incomingSecret = req.headers["x-fincanvas-webhook-secret"];
+      const incomingSecret = req.headers["x-fincanvas-webhook-secret"] || req.headers["x-pluggy-webhook-secret"];
       if (!incomingSecret || incomingSecret !== webhookSecret) {
         console.warn("[Pluggy Webhook Receiver] Secret validation failed!");
         return res.status(401).json({ error: "Unauthorized: Invalid or missing webhook secret." });
@@ -745,11 +954,14 @@ async function startServer() {
     console.log(JSON.stringify(req.body, null, 2));
 
     try {
-      const { event, id, item, transactionIds, clientUserId, triggeredBy, error } = req.body;
+      const { event, id, item, transactionIds, clientUserId, triggeredBy } = req.body;
+      const itemId = item?.id || req.body.itemId || undefined;
+      const resolvedClientId = clientUserId || item?.clientUserId || undefined;
       
-      let logStatus: "received" | "processed" | "ignored" | "failed" | "requires_user_action" = "received";
+      const eventId = id || `wh-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      let logStatus: "received" | "processed" | "ignored" | "failed" | "requires_user_action" | "security_mismatch" | "unmapped" = "received";
       
-      let errMsg = error;
+      let errMsg = req.body.error;
       if (errMsg && typeof errMsg === 'object') {
         errMsg = JSON.stringify(errMsg);
       } else if (errMsg) {
@@ -758,7 +970,7 @@ async function startServer() {
 
       switch (event) {
         case "item/updated":
-          logStatus = "processed"; // registrado e marcado como candidato para sync
+          logStatus = "processed";
           break;
         case "item/error":
           if (errMsg && (errMsg.toLowerCase().includes("user") || errMsg.toLowerCase().includes("mfa") || errMsg.toLowerCase().includes("credentials"))) {
@@ -787,21 +999,70 @@ async function startServer() {
           break;
       }
 
-      const eventLog: PluggyWebhookEventLog = {
-        id: id || `wh-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      // Zero-Trust resolution: Who is the actual owner of this item?
+      let ownerUid: string | null = null;
+      let ownerUidFromIndex: string | null = null;
+
+      if (itemId) {
+        const indexDoc = await db.collection("pluggyItemIndex").doc(itemId).get();
+        if (indexDoc.exists) {
+          ownerUidFromIndex = indexDoc.data()?.uid || null;
+        }
+      }
+
+      if (resolvedClientId && ownerUidFromIndex) {
+        // Validation: If clientUserId and index map mismatch, raise security exception tag
+        if (resolvedClientId !== ownerUidFromIndex) {
+          console.error(`[Security Mismatch] Webhook payload clientUserId: ${resolvedClientId} does NOT match registered index owner: ${ownerUidFromIndex}`);
+          logStatus = "security_mismatch";
+          ownerUid = ownerUidFromIndex; // fallback lock onto original index registration
+        } else {
+          ownerUid = resolvedClientId;
+        }
+      } else if (resolvedClientId) {
+        ownerUid = resolvedClientId;
+      } else if (ownerUidFromIndex) {
+        ownerUid = ownerUidFromIndex;
+      }
+
+      const eventLog: any = {
+        id: eventId,
         event: event || "item/updated",
-        itemId: item?.id || req.body.itemId || undefined,
-        transactionIds: transactionIds || undefined,
-        clientUserId: clientUserId || item?.clientUserId || undefined,
-        triggeredBy: triggeredBy || undefined,
+        itemId: itemId || null,
+        transactionIds: transactionIds || null,
+        clientUserId: resolvedClientId || null,
+        triggeredBy: triggeredBy || null,
         receivedAt: new Date().toISOString(),
         status: logStatus,
-        itemStatus: item?.status || undefined,
+        itemStatus: item?.status || null,
         rawBody: req.body,
-        error: errMsg || undefined
+        error: errMsg || null,
+        ownerResolvedVia: resolvedClientId && ownerUidFromIndex ? "both" : (resolvedClientId ? "clientUserId" : (ownerUidFromIndex ? "index" : "unresolved"))
       };
 
-      receivedWebhookEvents.unshift(eventLog);
+      if (!ownerUid) {
+        logStatus = "unmapped";
+        eventLog.status = "unmapped";
+        console.warn(`[Webhook Receiver] Unmapped webhook: no owner could be found for itemId: ${itemId}, clientUserId: ${resolvedClientId}`);
+        await db.collection("pluggy_unmapped_webhooks").doc(eventId).set(eventLog);
+      } else {
+        eventLog.ownerUid = ownerUid;
+        // Persist safely inside the authenticated owner's subcollection
+        await db.collection("users").doc(ownerUid).collection("pluggyWebhookEvents").doc(eventId).set(eventLog);
+        console.log(`[Webhook Receiver] Secure tenant log appended for uid: ${ownerUid}`);
+      }
+
+      // Add to global diagnostic feed for dev
+      receivedWebhookEvents.unshift({
+        ...eventLog,
+        id: eventId,
+        itemId: itemId || undefined,
+        transactionIds: transactionIds || undefined,
+        clientUserId: resolvedClientId || undefined,
+        triggeredBy: triggeredBy || undefined,
+        itemStatus: item?.status || undefined,
+        error: errMsg || undefined
+      });
       if (receivedWebhookEvents.length > 100) {
         receivedWebhookEvents.length = 100;
       }
@@ -815,8 +1076,9 @@ async function startServer() {
   });
 
   // 3. Sincronizar e categorizar transações bancárias do Pluggy com IA (Gemini)
-  app.post("/api/pluggy/sync", async (req, res) => {
+  app.post("/api/pluggy/sync", requireAuth, async (req: any, res) => {
     const { categories, itemIds } = req.body;
+    const uid = req.user.uid;
     const userCategories = categories || [
       'Alimentação', 'Transporte', 'Lazer', 'Saúde', 
       'Educação', 'Moradia', 'Salário', 'Investimentos',
@@ -824,35 +1086,72 @@ async function startServer() {
     ];
 
     try {
-      const { clientId, clientSecret } = getPluggyCredentialsOrThrow(req);
+      const { clientId, clientSecret } = await getPluggyCredentialsOrThrow(req);
       const apiKey = await PluggyService.authenticate(clientId, clientSecret);
       
+      // Load user profile and index mapping to ensure ownership
+      const userProfileSnap = await db.collection("users").doc(uid).get();
+      const userProfileItemIds: string[] = userProfileSnap.exists ? (userProfileSnap.data()?.pluggyItemIds || []) : [];
+
       let items: any[] = [];
       const itemIdsList: string[] = Array.isArray(itemIds) ? itemIds.filter(Boolean) : [];
 
       if (itemIdsList.length > 0) {
         console.log(`[Pluggy Sync Endpoint] Realizando sync focado em ${itemIdsList.length} Item IDs fornecidos pelo cliente.`);
+        // Zero-Trust: Validate each requested ID
         for (const id of itemIdsList) {
-          try {
-            const itemData = await PluggyService.getItem(apiKey, id);
-            items.push(itemData);
-          } catch (itemErr: any) {
-            console.warn(`[Pluggy Sync Endpoint] Fallback para item ${id}:`, itemErr.message);
-            items.push({ id, status: "UPDATED" }); 
+          if (userProfileItemIds.includes(id)) {
+            try {
+              const itemData = await PluggyService.getItem(apiKey, id);
+              items.push(itemData);
+            } catch (itemErr: any) {
+              console.warn(`[Pluggy Sync Endpoint] Fallback para item ${id}:`, itemErr.message);
+              items.push({ id, status: "UPDATED" }); 
+            }
+          } else {
+            // Check the public index lookup
+            const indexSnap = await db.collection("pluggyItemIndex").doc(id).get();
+            if (indexSnap.exists && indexSnap.data()?.uid === uid) {
+              try {
+                const itemData = await PluggyService.getItem(apiKey, id);
+                items.push(itemData);
+              } catch (itemErr: any) {
+                console.warn(`[Pluggy Sync Endpoint] Fallback para item ${id}:`, itemErr.message);
+                items.push({ id, status: "UPDATED" }); 
+              }
+            } else {
+              console.warn(`[Zero-Trust Guard] Blocked sync request for unauthorized itemId: ${id} by uid: ${uid}`);
+              return res.status(403).json({ error: "Access Denied: You do not own this connection." });
+            }
           }
         }
       } else {
-        console.log(`[Pluggy Sync Endpoint] Tentando listagem global já que nenhum ID de conexão específico foi fornecido.`);
-        try {
-          items = await PluggyService.listItems(apiKey);
-        } catch (listErr: any) {
-          console.error(`[Pluggy Sync Endpoint] Falha ao listar itens:`, listErr.message);
-          return res.status(200).json({
-            ok: false,
-            success: false,
-            code: "PLUGGY_ITEM_ID_REQUIRED",
-            message: "Credenciais Pluggy autenticadas, mas nenhuma conexão bancária foi vinculada. Adicione um Item ID manual ou conecte uma conta via Pluggy Connect."
-          });
+        console.log(`[Pluggy Sync Endpoint] No items specified. Loading user-owned items from profile/index.`);
+        // Fetch all owned items from user profile
+        if (userProfileItemIds.length > 0) {
+          for (const id of userProfileItemIds) {
+            try {
+              const itemData = await PluggyService.getItem(apiKey, id);
+              items.push(itemData);
+            } catch (err: any) {
+              console.warn(`[Pluggy Sync Endpoint] Sunk loading user item: ${id}`, err.message);
+              items.push({ id, status: "UPDATED" });
+            }
+          }
+        } else {
+          // Fetch from index
+          const indexSnap = await db.collection("pluggyItemIndex").where("uid", "==", uid).get();
+          if (!indexSnap.empty) {
+            for (const doc of indexSnap.docs) {
+              try {
+                const itemData = await PluggyService.getItem(apiKey, doc.id);
+                items.push(itemData);
+              } catch (err: any) {
+                console.warn(`[Pluggy Sync Endpoint] Sunk loading indexed item: ${doc.id}`, err.message);
+                items.push({ id: doc.id, status: "UPDATED" });
+              }
+            }
+          }
         }
       }
 

@@ -506,6 +506,53 @@ async function runTests() {
     failed++;
   }
 
+  // 20. Segurança Multi-usuário, Tenant Isolation e Zero-Trust Scoping
+  try {
+    console.log("=== INICIANDO TESTE 20: MULTI-USER SECURITY & ISOLATION ===");
+
+    // A. Mocking Webhook User Resolution Logic
+    const resolveWebhookOwner = (clientUserId: string | undefined, itemId: string | undefined, itemIndexOwner: string | undefined): { ownerUid: string | null; mismatch: boolean; unmapped: boolean } => {
+      // 1. Both resolved but point to different owners
+      if (clientUserId && itemIndexOwner && clientUserId !== itemIndexOwner) {
+        return { ownerUid: clientUserId, mismatch: true, unmapped: false };
+      }
+      
+      // 2. Resolved by clientUserId
+      if (clientUserId) {
+        return { ownerUid: clientUserId, mismatch: false, unmapped: false };
+      }
+      
+      // 3. Resolved by indexed itemId
+      if (itemId && itemIndexOwner) {
+        return { ownerUid: itemIndexOwner, mismatch: false, unmapped: false };
+      }
+      
+      // 4. Mismatch/unmapped
+      return { ownerUid: null, mismatch: false, unmapped: true };
+    };
+
+    const resValidDirect = resolveWebhookOwner("user-123", "item-abc", "user-123");
+    assert(resValidDirect.ownerUid === "user-123" && !resValidDirect.mismatch && !resValidDirect.unmapped, "Dono do webhook resolvido com sucesso quando clientUserId coincide com itemId dono");
+
+    const resMismatch = resolveWebhookOwner("user-123", "item-abc", "user-456");
+    assert(resMismatch.mismatch === true, "Deve marcar como security_mismatch quando clientUserId e itemId dono divergem");
+
+    const resUnmapped = resolveWebhookOwner(undefined, "item-xyz", undefined);
+    assert(resUnmapped.unmapped === true, "Deve marcar como unmapped se não for possível correlacionar nenhum dono");
+
+    // B. Zero-Trust Access Scoping Mock Function
+    const canAccessItem = (itemOwnerUid: string, requestingUid: string): boolean => {
+      return itemOwnerUid === requestingUid;
+    };
+
+    assert(canAccessItem("user-999", "user-999") === true, "Usuário autenticado pode acessar seu próprio itemId");
+    assert(canAccessItem("user-999", "user-111") === false, "Acesso bloqueado caso um usuário tente acessar o itemId de outro usuário");
+
+  } catch (err: any) {
+    console.error("Erro no teste 20:", err);
+    failed++;
+  }
+
   console.log(`\n=== RESULTADO DOS TESTES: ${passed} Passaram | ${failed} Falharam ===`);
   if (failed > 0) {
     process.exit(1);

@@ -225,7 +225,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
     }
   }, [profile.pluggyItemIds]);
 
-  const getPluggyHeaders = () => {
+  const getPluggyHeaders = async () => {
     let cid = pluggyClientId;
     let csec = pluggyClientSecret;
 
@@ -244,6 +244,15 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
       'Content-Type': 'application/json'
     };
 
+    try {
+      const token = await user.getIdToken();
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+    } catch (err) {
+      console.warn('[Pluggy auth token] Failed to fetch Firebase ID token:', err);
+    }
+
     if (cid && cid.trim()) {
       headers['x-pluggy-client-id'] = cid.trim();
       headers['pluggyClientId'] = cid.trim();
@@ -257,8 +266,12 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
   };
 
   const checkHasPluggyKeys = () => {
-    const headers = getPluggyHeaders();
-    return !!(headers['x-pluggy-client-id'] && headers['x-pluggy-client-secret']);
+    let cid = pluggyClientId || localStorage.getItem('PREF_PLUGGY_CLIENT_ID') || profile.pluggyClientId || '';
+    let csec = pluggyClientSecret || localStorage.getItem('PREF_PLUGGY_CLIENT_SECRET') || profile.pluggyClientSecret || '';
+    if (csec === '••••••••••••••••') {
+      csec = localStorage.getItem('PREF_PLUGGY_CLIENT_SECRET') || profile.pluggyClientSecret || '';
+    }
+    return !!(cid && csec);
   };
   const hasPluggyKeys = isPluggyConfiguredOnServer || checkHasPluggyKeys();
 
@@ -372,7 +385,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
     try {
       const res = await fetch('/api/pluggy/connect_token', {
         method: 'POST',
-        headers: getPluggyHeaders(),
+        headers: await getPluggyHeaders(),
         body: JSON.stringify({ clientUserId: user.uid, itemId: reconnectItemId })
       });
       const data = await safeJsonClient(res);
@@ -405,7 +418,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
               toast.loading('Validando conexão com a Pluggy...', { id: 'validate-new-item' });
               const valRes = await fetch('/api/pluggy/validate_item', {
                 method: 'POST',
-                headers: getPluggyHeaders(),
+                headers: await getPluggyHeaders(),
                 body: JSON.stringify({ itemId })
               });
               const valData = await safeJsonClient(valRes);
@@ -470,7 +483,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
     try {
       const res = await fetch('/api/pluggy/diagnose', {
         method: 'POST',
-        headers: getPluggyHeaders(),
+        headers: await getPluggyHeaders(),
         body: JSON.stringify({
           itemIds: localItemIds
         })
@@ -521,7 +534,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
       toast.loading('Validando ID de Conexão com a Pluggy...', { id: 'validate-item' });
       const valRes = await fetch('/api/pluggy/validate_item', {
         method: 'POST',
-        headers: getPluggyHeaders(),
+        headers: await getPluggyHeaders(),
         body: JSON.stringify({ itemId: rawId })
       });
       const valData = await safeJsonClient(valRes);
@@ -592,13 +605,13 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
 
   // --- FETCH PLUGGY ITEMS DETAILS ---
   const loadPluggyItems = async () => {
-    const headers = getPluggyHeaders();
     if (!hasPluggyKeys || localItemIds.length === 0) {
       setPluggyItems([]);
       return;
     }
     setIsLoadingItems(true);
     try {
+      const headers = await getPluggyHeaders();
       const res = await fetch('/api/pluggy/list_items', {
         method: 'POST',
         headers,
@@ -630,7 +643,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
     try {
       const res = await fetch('/api/pluggy/sync', {
         method: 'POST',
-        headers: getPluggyHeaders(),
+        headers: await getPluggyHeaders(),
         body: JSON.stringify({
           categories: profile.categories || [],
           itemIds: localItemIds,
@@ -911,7 +924,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
     try {
       const res = await fetch('/api/pluggy/list_webhooks', {
         method: 'POST',
-        headers: getPluggyHeaders(),
+        headers: await getPluggyHeaders(),
         body: JSON.stringify({})
       });
       const data = await safeJsonClient(res);
@@ -941,7 +954,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
     try {
       const res = await fetch('/api/pluggy/create_webhook', {
         method: 'POST',
-        headers: getPluggyHeaders(),
+        headers: await getPluggyHeaders(),
         body: JSON.stringify({
           event: selectedEvent,
           url: webhookUrl.trim()
@@ -974,7 +987,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
         try {
           const res = await fetch('/api/pluggy/delete_webhook', {
             method: 'POST',
-            headers: getPluggyHeaders(),
+            headers: await getPluggyHeaders(),
             body: JSON.stringify({ webhookId })
           });
           const data = await safeJsonClient(res);
@@ -995,7 +1008,9 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
   const loadCapturedEvents = async () => {
     setIsLoadingEvents(true);
     try {
-      const res = await fetch('/api/pluggy/webhook_events');
+      const res = await fetch('/api/pluggy/webhook_events', {
+        headers: await getPluggyHeaders()
+      });
       const data = await safeJsonClient(res);
       if (res.ok && data.success) {
         setCapturedEvents(data.events || []);
@@ -1014,7 +1029,9 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
     }
     const checkServerCredentials = async () => {
       try {
-        const res = await fetch('/api/pluggy/credentials_status');
+        const res = await fetch('/api/pluggy/credentials_status', {
+          headers: await getPluggyHeaders()
+        });
         const data = await safeJsonClient(res);
         if (data.configured) {
           setIsPluggyConfiguredOnServer(true);

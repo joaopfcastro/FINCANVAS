@@ -209,12 +209,13 @@ export class PluggyService {
   /**
    * Generates a Connect Token for initiating Pluggy Connect Widget
    */
-  public static async createConnectToken(apiKey: string, clientUserId?: string, itemId?: string): Promise<any> {
+  public static async createConnectToken(apiKey: string, clientUserId?: string, itemId?: string, options?: any): Promise<any> {
     console.log(`[PluggyService] Gerando Connect Token...`);
     const payload: any = {
       options: {
         clientUserId: clientUserId || "fincanvas-user",
         avoidDuplicates: true,
+        ...(options || {})
       }
     };
     if (itemId) {
