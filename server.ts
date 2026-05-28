@@ -149,6 +149,7 @@ async function safeJson(response: any): Promise<any> {
 }
 
 // LEGACY DEV-ONLY - NOT USED BY MULTI-PROVIDER ARCHITECTURE
+// Legacy disabled code. Not used by /api/ai/generate, /api/gemini, Pluggy Sync, ImportView or ManualEntryModal.
 let aiClient: GoogleGenAI | null = null;
 function getAiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -196,6 +197,7 @@ function getPromptText(contents: any): string {
 }
 // Generate highly realistic smart mockup response matching UI expectations on API failure
 // LEGACY DEV-ONLY - NOT USED BY MULTI-PROVIDER ARCHITECTURE
+// Legacy disabled code. Not used by /api/ai/generate, /api/gemini, Pluggy Sync, ImportView or ManualEntryModal.
 export function getSimulatedGeminiResponse(model: string, contents: any, config: any): { text: string; [key: string]: any } {
   const ENABLE_SIMULATED_AI_FALLBACK = process.env.ENABLE_SIMULATED_AI_FALLBACK === "true";
   const IS_PRODUCTION = process.env.NODE_ENV === "production";

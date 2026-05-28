@@ -652,15 +652,15 @@ async function runTests() {
     // 5. Textos e logs de console do sistema não devem ludibriar ou prometer criptografia inexistente de chaves
     assert(!serverContent.includes("Loaded user encrypted Pluggy credentials"), "Texto do servidor não deve prometer 'encrypted' sem aplicação de criptografia na camada correspondente, alinhando-se a 'server-only'");
 
-    // 6. ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS documentado como false na configuração padrão
-    assert(envExampleContent.includes("ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS=false"), ".env.example deve documentar o flag como false nas diretrizes");
+    // 6. ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS não deve mais constar no .env.example
+    assert(!envExampleContent.includes("ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS"), ".env.example não deve conter ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS");
 
     console.log("✅ PASSED: firestore.rules aceita recognitionConfidence/recognitionMethod/needsReview válidos");
     console.log("✅ PASSED: firestore.rules rejeita recognitionConfidence fora de 0..1");
     console.log("✅ PASSED: create_sandbox chama recordItemOwnership");
     console.log("✅ PASSED: webhook_listener responde 200 de imediato para a Pluggy");
     console.log("✅ PASSED: logs e textos alinhados para 'server-only' evitando termos de criptografia inconsistente");
-    console.log("✅ PASSED: ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS documentado como false");
+    console.log("✅ PASSED: ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS não consta no .env.example");
 
     passed++;
   } catch (err: any) {
