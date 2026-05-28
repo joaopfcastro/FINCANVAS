@@ -786,7 +786,24 @@ export const DashboardView = React.memo(function DashboardView({
   }
 
   if (transactions.length === 0) {
-    return <EmptyState onNavigateImport={onNavigateImport} />;
+    return (
+      <div className="flex-1 flex flex-col min-w-0 relative h-full">
+        {isSyncingPluggy && (
+          <div className="absolute top-4 left-4 right-4 z-50 flex items-center justify-center">
+            <div className="flex items-center gap-1.5 px-4 py-2 bg-emerald-50 border border-emerald-100 rounded-full animate-pulse text-emerald-800 text-xs font-semibold shadow-md">
+              <Loader2 className="w-4 h-4 animate-spin text-emerald-600" />
+              <span>{pluggySyncStep || 'Sincronizando...'}</span>
+            </div>
+          </div>
+        )}
+        <EmptyState
+          onNavigateImport={onNavigateImport}
+          pluggyItemIdsCount={profile?.pluggyItemIds?.length || 0}
+          onSyncPluggy={syncPluggyNow}
+          isSyncingPluggy={isSyncingPluggy}
+        />
+      </div>
+    );
   }
 
   return (

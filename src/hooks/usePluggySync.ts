@@ -159,7 +159,7 @@ export function usePluggySync(
 
       const data = await safeJsonClient(syncRes);
       if (!syncRes.ok || !data.success) {
-        throw new Error(data.error || 'Problema de resposta no servidor de sincronização.');
+        throw new Error(data.message || data.error || 'Problema de resposta no servidor de sincronização.');
       }
 
       // 7. Upsert retrieved account balances in transactional Firestore logic

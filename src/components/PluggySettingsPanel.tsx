@@ -648,7 +648,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
       return;
     }
     // settings tab manually forces sync, bypassing throttle cooldown
-    await syncPluggyNow({ force: true });
+    await syncPluggyNow({ force: true, itemIds: localItemIds });
   };
 
   // --- HISTORICAL AUDIT AND HIGH-TOUCH SANITIZER ENGINE ---

@@ -1,11 +1,19 @@
 import React from 'react';
-import { BarChart3 } from 'lucide-react';
+import { BarChart3, RefreshCw } from 'lucide-react';
 
 interface EmptyStateProps {
   onNavigateImport: () => void;
+  pluggyItemIdsCount?: number;
+  onSyncPluggy?: () => void;
+  isSyncingPluggy?: boolean;
 }
 
-export function EmptyState({ onNavigateImport }: EmptyStateProps) {
+export function EmptyState({ 
+  onNavigateImport, 
+  pluggyItemIdsCount = 0, 
+  onSyncPluggy, 
+  isSyncingPluggy = false 
+}: EmptyStateProps) {
   return (
     <div className="flex-1 flex flex-col w-full h-full overflow-y-auto bg-slate-50 dark:bg-slate-900 border-none m-0 p-0">
       <div className="flex-1 flex flex-col w-full max-w-lg mx-auto p-6 pb-28 sm:pb-12 sm:p-8 min-h-min justify-center my-auto border-none">
@@ -19,9 +27,22 @@ export function EmptyState({ onNavigateImport }: EmptyStateProps) {
           </div>
           <h3 className="text-xl sm:text-2xl font-black text-slate-800 tracking-tight mb-2 sm:mb-3">Nenhum dado na sua nuvem</h3>
           <p className="text-slate-500 max-w-sm mx-auto text-[15px] sm:text-sm leading-relaxed mb-6 sm:mb-8">Vá para a aba "Importar Dados" e envie seus extratos bancários. Eles serão importados e analisados automaticamente.</p>
-          <button onClick={onNavigateImport} className="w-full sm:w-auto px-6 sm:px-8 py-3.5 sm:py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-[20px] sm:rounded-2xl hover:shadow-lg transition-all text-base active:scale-[0.98] sm:active:scale-100 flex items-center justify-center gap-2 flex-shrink-0">
-            Começar Importação
-          </button>
+          
+          <div className="flex flex-col sm:flex-row gap-3 w-full justify-center">
+            <button onClick={onNavigateImport} className="px-6 py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-[20px] sm:rounded-2xl hover:shadow-lg transition-all text-sm active:scale-[0.98] sm:active:scale-100 flex items-center justify-center gap-2 flex-shrink-0">
+              Começar Importação
+            </button>
+            {pluggyItemIdsCount > 0 && onSyncPluggy && (
+              <button 
+                onClick={onSyncPluggy} 
+                disabled={isSyncingPluggy}
+                className="px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-[20px] sm:rounded-2xl hover:shadow-lg transition-all text-sm active:scale-[0.98] sm:active:scale-100 flex items-center justify-center gap-2 flex-shrink-0 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-4 h-4 ${isSyncingPluggy ? 'animate-spin' : ''}`} />
+                {isSyncingPluggy ? 'Sincronizando...' : 'Sincronizar Pluggy'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
