@@ -68,7 +68,7 @@ export const ImportView = React.memo(function ImportView({ userId, onNavigateDas
   const handleConfirmAI = async (dontAskAgain: boolean) => {
     setShowConfirmModal(false);
     if (dontAskAgain) {
-      sessionStorage.setItem('ai_bypass_confirm', 'true');
+      sessionStorage.setItem('ai_bypass_confirm_ocr', 'true');
     }
     if (pendingProcessFiles) {
       const filesToProcess = pendingProcessFiles;
@@ -100,7 +100,7 @@ export const ImportView = React.memo(function ImportView({ userId, onNavigateDas
         return;
       }
 
-      const bypass = sessionStorage.getItem('ai_bypass_confirm') === 'true';
+      const bypass = sessionStorage.getItem('ai_bypass_confirm_ocr') === 'true';
       const needsConfirm = (settings?.aiAlwaysAskBeforeSending ?? true) && !bypass;
 
       if (needsConfirm) {
@@ -231,10 +231,13 @@ Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, 
           
           // Modern recognition parameters
           recognitionConfidence: localRec.confidence,
-          recognitionMethod: item.isAiExtracted ? 'AI_FALLBACK' : localRec.method,
-          recognitionEvidence: item.isAiExtracted ? ['Extraído por IA visual (OCR / Imagem)'] : localRec.evidence,
+          recognitionMethod: localRec.method,
+          recognitionEvidence: item.isAiExtracted
+            ? ["Dados extraídos por OCR de IA", ...localRec.evidence]
+            : localRec.evidence,
           needsReview: localRec.needsReview,
           aiUsed: item.isAiExtracted,
+          aiReason: item.isAiExtracted ? "OCR_EXTRACTION" : undefined,
           merchantKey: localRec.merchantKey,
           cleanDescription: localRec.cleanDescription || item.desc
         };

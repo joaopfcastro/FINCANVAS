@@ -113,7 +113,7 @@ export const ReportsView = React.memo(function ReportsView({
   const handleConfirmAI = async (dontAskAgain: boolean) => {
     setShowConfirmModal(false);
     if (dontAskAgain) {
-      sessionStorage.setItem('ai_bypass_confirm', 'true');
+      sessionStorage.setItem('ai_bypass_confirm_report', 'true');
     }
     if (hasPendingGenerate) {
       setHasPendingGenerate(false);
@@ -459,7 +459,7 @@ export const ReportsView = React.memo(function ReportsView({
       return;
     }
 
-    const bypass = sessionStorage.getItem('ai_bypass_confirm') === 'true';
+    const bypass = sessionStorage.getItem('ai_bypass_confirm_report') === 'true';
     const needsConfirm = (settings.aiAlwaysAskBeforeSending ?? true) && !bypass;
 
     if (needsConfirm) {
@@ -1040,14 +1040,16 @@ export const ReportsView = React.memo(function ReportsView({
           ) : (
             <>
               {/* Mentoria AI Tab Content */}
-              {aiSettings && (!aiSettings.aiEnabled || !aiSettings.aiUseForReports) ? (
+              {!aiSettings || !aiSettings.aiEnabled || !aiSettings.aiUseForReports ? (
                 <div className="flex-1 flex flex-col justify-center items-center py-12 sm:py-24 text-center">
                   <div className="w-16 h-16 bg-slate-100 border border-slate-200 text-slate-400 rounded-2xl flex items-center justify-center mx-auto mb-4">
                     <BrainCircuit className="w-8 h-8" />
                   </div>
-                  <h3 className="text-lg font-bold text-slate-700">Relatórios por IA Desativados</h3>
+                  <h3 className="text-lg font-bold text-slate-700">
+                    {!aiSettings ? "Configurações de IA não carregadas" : "Relatórios por IA Desativados"}
+                  </h3>
                   <p className="text-sm text-slate-400 mt-2 max-w-sm mx-auto">
-                    Geração de relatórios por IA desativada. Ative em Preferências &gt; Inteligência Artificial.
+                    Configurações de IA não carregadas ou IA desativada.
                   </p>
                 </div>
               ) : (

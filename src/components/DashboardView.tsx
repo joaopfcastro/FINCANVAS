@@ -113,7 +113,7 @@ export const DashboardView = React.memo(function DashboardView({
   const handleConfirmAI = async (dontAskAgain: boolean) => {
     setShowConfirmModal(false);
     if (dontAskAgain) {
-      sessionStorage.setItem('ai_bypass_confirm', 'true');
+      sessionStorage.setItem('ai_bypass_confirm_insight', 'true');
     }
     if (pendingAIAction === 'insights') {
       setPendingAIAction(null);
@@ -579,7 +579,7 @@ export const DashboardView = React.memo(function DashboardView({
       return;
     }
 
-    const bypass = sessionStorage.getItem('ai_bypass_confirm') === 'true';
+    const bypass = sessionStorage.getItem('ai_bypass_confirm_insight') === 'true';
     const needsConfirm = (settings.aiAlwaysAskBeforeSending ?? true) && !bypass;
 
     if (needsConfirm) {
@@ -670,7 +670,7 @@ export const DashboardView = React.memo(function DashboardView({
       return;
     }
 
-    const bypass = sessionStorage.getItem('ai_bypass_confirm') === 'true';
+    const bypass = sessionStorage.getItem('ai_bypass_confirm_insight') === 'true';
     const needsConfirm = (settings.aiAlwaysAskBeforeSending ?? true) && !bypass;
 
     if (needsConfirm) {
@@ -854,7 +854,7 @@ export const DashboardView = React.memo(function DashboardView({
           </div>
         </div>
 
-        {aiSettings && (!aiSettings.aiEnabled || !aiSettings.aiUseForInsights) ? (
+        {!aiSettings || !aiSettings.aiEnabled || !aiSettings.aiUseForInsights ? (
           <div className="bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl p-3 sm:p-5 text-slate-500 shadow-sm flex items-center justify-between gap-3 sm:gap-4 flex-shrink-0">
             <div className="flex items-center gap-3 sm:gap-4 w-full">
               <div className="bg-slate-100 p-2 sm:p-3 rounded-lg sm:rounded-xl border border-slate-200 text-slate-400">
@@ -862,10 +862,10 @@ export const DashboardView = React.memo(function DashboardView({
               </div>
               <div className="flex flex-col flex-1 min-w-0">
                 <div className="text-[11px] sm:text-sm md:text-base font-bold text-slate-700 flex items-center gap-2">
-                  Insights por IA Desativados
+                  {!aiSettings ? 'Configurando IA...' : 'Insights por IA Desativados'}
                 </div>
                 <p className="text-[9px] sm:text-xs md:text-sm text-slate-400 leading-tight line-clamp-1 truncate mt-0.5">
-                  Insights por IA desativados. Ative em Preferências &gt; Inteligência Artificial.
+                  Configurações de IA não carregadas ou IA desativada.
                 </p>
               </div>
             </div>

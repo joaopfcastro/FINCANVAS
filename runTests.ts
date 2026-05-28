@@ -1085,6 +1085,40 @@ async function runTests() {
     failed++;
   }
 
+  // 28. Testes obrigatórios da Fase 5.1 - Refinamento de IA por tarefa
+  try {
+    console.log("=== INICIANDO TESTE 28: FASE 5.1 HARDENING RECLASSIFICAÇÕES E DETALHES DE CONFIRMAÇÃO DE IA ===");
+
+    const importViewText = fs.readFileSync('./src/components/ImportView.tsx', 'utf8');
+    const manualEntryText = fs.readFileSync('./src/components/ManualEntryModal.tsx', 'utf8');
+    const dashboardText = fs.readFileSync('./src/components/DashboardView.tsx', 'utf8');
+    const reportsText = fs.readFileSync('./src/components/ReportsView.tsx', 'utf8');
+
+    // 1. confirmar OCR não libera insight (confirmar ocr usa ai_bypass_confirm_ocr)
+    assert(importViewText.includes("ai_bypass_confirm_ocr"), "ImportView deve usar bypass específico 'ai_bypass_confirm_ocr'");
+    assert(manualEntryText.includes("ai_bypass_confirm_ocr"), "ManualEntryModal deve usar bypass específico 'ai_bypass_confirm_ocr'");
+
+    // 2. confirmar ocr/insight não libera categoryFallback ou reports
+    assert(manualEntryText.includes("ai_bypass_confirm_categoryFallback"), "ManualEntryModal deve usar 'ai_bypass_confirm_categoryFallback'");
+    assert(dashboardText.includes("ai_bypass_confirm_insight"), "DashboardView deve usar 'ai_bypass_confirm_insight'");
+    assert(reportsText.includes("ai_bypass_confirm_report"), "ReportsView deve usar 'ai_bypass_confirm_report'");
+
+    // 3. ImportView não salva recognitionMethod AI_FALLBACK quando IA usada apenas para OCR
+    assert(importViewText.includes("recognitionMethod: localRec.method"), "ImportView não deve forçar AI_FALLBACK no recognitionMethod se for apenas OCR");
+
+    // 4. aiReason OCR_EXTRACTION é salvo quando item vem com isAiExtracted
+    assert(importViewText.includes("aiReason: item.isAiExtracted ? \"OCR_EXTRACTION\" : undefined"), "ImportView deve registrar aiReason OCR_EXTRACTION para transações extraídas por IA");
+
+    // 5. Dashboard/Reports não mostram ação de IA como ativa quando aiSettings ainda é null
+    assert(dashboardText.includes("!aiSettings || !aiSettings.aiEnabled || !aiSettings.aiUseForInsights"), "DashboardView deve tratar aiSettings null como desativado/não carregado");
+    assert(reportsText.includes("!aiSettings || !aiSettings.aiEnabled || !aiSettings.aiUseForReports"), "ReportsView deve tratar aiSettings null como desativado/não carregado");
+
+    passed++;
+  } catch (err: any) {
+    console.error("Erro no teste 28:", err);
+    failed++;
+  }
+
   console.log(`\n=== RESULTADO DOS TESTES: ${passed} Passaram | ${failed} Falharam ===`);
   if (failed > 0) {
     process.exit(1);

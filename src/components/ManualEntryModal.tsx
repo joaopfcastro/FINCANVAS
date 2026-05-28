@@ -65,8 +65,12 @@ export const ManualEntryModal = React.memo(function ManualEntryModal({ isOpen, o
 
   const handleConfirmAI = async (dontAskAgain: boolean) => {
     setShowConfirmModal(false);
-    if (dontAskAgain) {
-      sessionStorage.setItem('ai_bypass_confirm', 'true');
+    if (dontAskAgain && pendingAIAction) {
+      if (pendingAIAction.type === 'ocr') {
+        sessionStorage.setItem('ai_bypass_confirm_ocr', 'true');
+      } else if (pendingAIAction.type === 'suggest') {
+        sessionStorage.setItem('ai_bypass_confirm_categoryFallback', 'true');
+      }
     }
     if (pendingAIAction) {
       const action = pendingAIAction;
@@ -214,7 +218,7 @@ Aviso: Não classifique nenhuma categoria.`
       return;
     }
 
-    const bypass = sessionStorage.getItem('ai_bypass_confirm') === 'true';
+    const bypass = sessionStorage.getItem('ai_bypass_confirm_ocr') === 'true';
     const needsConfirm = (settings?.aiAlwaysAskBeforeSending ?? true) && !bypass;
 
     if (needsConfirm) {
@@ -427,7 +431,7 @@ Siga estas instruções críticas:
 
       if (localResult.confidence < REVIEW_OR_AI) {
         if (aiAllowed) {
-          const bypass = sessionStorage.getItem('ai_bypass_confirm') === 'true';
+          const bypass = sessionStorage.getItem('ai_bypass_confirm_categoryFallback') === 'true';
           const needsConfirm = (settings?.aiAlwaysAskBeforeSending ?? true) && !bypass;
 
           if (needsConfirm) {
