@@ -1203,6 +1203,14 @@ async function runTests() {
     // 6. O endpoint /api/pluggy/credentials/status não deve retornar usingGlobalCredentials
     assert(!serverText.includes("usingGlobalCredentials:"), "server.ts não deve incluir mais usingGlobalCredentials nos retornos da API de status de credenciais");
 
+    // 7. Testes do PluggySettingsPanel
+    const pluggyPanelText = fs.readFileSync('./src/components/PluggySettingsPanel.tsx', 'utf8');
+    assert(!pluggyPanelText.includes("usingGlobalCredentials"), "PluggySettingsPanel não deve conter a variável usingGlobalCredentials");
+    assert(!pluggyPanelText.includes("setUsingGlobalCredentials"), "PluggySettingsPanel não deve conter a função setUsingGlobalCredentials");
+    assert(!pluggyPanelText.includes("storageMethod"), "PluggySettingsPanel não deve conter referências a storageMethod");
+    assert(!pluggyPanelText.match(/pluggyClientSecret\s*:/), "PluggySettingsPanel não deve conter pluggyClientSecret como chave de atualização do Firestore ou de objeto");
+    assert(pluggyPanelText.includes("clientSecret: pluggyClientSecret.trim()"), "PluggySettingsPanel deve enviar clientSecret para o endpoint de salvamento");
+
     passed++;
     console.log("✅ PASSED: Variável aiFallbackAppliedCount renomeada com sucesso para aiOcrExtractedCount");
     console.log("✅ PASSED: Nenhum componente chama o endpoint legado /api/gemini diretamente");
@@ -1210,6 +1218,11 @@ async function runTests() {
     console.log("✅ PASSED: Nenhum fallback global nem log global de chaves Pluggy");
     console.log("✅ PASSED: Erro de credenciais lançados com status 428 controlado");
     console.log("✅ PASSED: O endpoint status de credenciais não retorna usingGlobalCredentials");
+    console.log("✅ PASSED: PluggySettingsPanel não contém usingGlobalCredentials");
+    console.log("✅ PASSED: PluggySettingsPanel não contém setUsingGlobalCredentials");
+    console.log("✅ PASSED: PluggySettingsPanel não contém referências a storageMethod");
+    console.log("✅ PASSED: PluggySettingsPanel não grava pluggyClientSecret via updateDoc");
+    console.log("✅ PASSED: PluggySettingsPanel envia pluggyClientSecret exclusivamente em clientSecret");
   } catch (err: any) {
     console.error("Erro no teste 30:", err);
     failed++;

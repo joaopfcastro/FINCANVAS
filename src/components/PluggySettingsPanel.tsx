@@ -173,11 +173,9 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
   const [pluggyClientId, setPluggyClientId] = useState('');
   const [pluggyClientSecret, setPluggyClientSecret] = useState('');
   const [showClientSecret, setShowClientSecret] = useState(false);
-  const [storageMethod, setStorageMethod] = useState<'cloud' | 'local'>('cloud');
   const [isSavingCustomKeys, setIsSavingCustomKeys] = useState(false);
   const [isPluggyConfigured, setIsPluggyConfigured] = useState(false);
   const [clientIdMasked, setClientIdMasked] = useState<string | null>(null);
-  const [usingGlobalCredentials, setUsingGlobalCredentials] = useState(false);
   const [isPluggyConfiguredOnServer, setIsPluggyConfiguredOnServer] = useState(false);
   const [manualItemIdInput, setManualItemIdInput] = useState('');
   const [showManualForm, setShowManualForm] = useState(false);
@@ -288,12 +286,10 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
       if (data && data.configured) {
         setIsPluggyConfigured(true);
         setClientIdMasked(data.clientIdMasked);
-        setUsingGlobalCredentials(data.usingGlobalCredentials);
         setIsPluggyConfiguredOnServer(true);
       } else {
         setIsPluggyConfigured(false);
         setClientIdMasked(null);
-        setUsingGlobalCredentials(false);
         setIsPluggyConfiguredOnServer(false);
       }
     } catch (err) {
@@ -369,12 +365,6 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
           // Limpa legados de localStorage e banco por garantia
           localStorage.removeItem('PREF_PLUGGY_CLIENT_ID');
           localStorage.removeItem('PREF_PLUGGY_CLIENT_SECRET');
-
-          await updateDoc(doc(db, 'users', user.uid), {
-            pluggyClientId: '',
-            pluggyClientSecret: '',
-            updatedAt: serverTimestamp()
-          }).catch(() => {});
 
           setPluggyClientId('');
           setPluggyClientSecret('');
