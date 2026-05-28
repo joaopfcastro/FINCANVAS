@@ -655,12 +655,28 @@ async function runTests() {
     // 6. ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS não deve mais constar no .env.example
     assert(!envExampleContent.includes("ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS"), ".env.example não deve conter ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS");
 
+    // 7. Validações estritas de .env.example
+    const envLines = envExampleContent.split("\n");
+    for (const line of envLines) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith("#")) {
+        assert(trimmed.includes("="), "Qualquer linha não-vazia e que não seja comentário no .env.example deve ser uma atribuição válida (conter '=')");
+      }
+    }
+    assert(!envExampleContent.toLowerCase().includes("mandatory") && !envExampleContent.toLowerCase().includes("obrigatória"), ".env.example não deve dizer que GEMINI_API_KEY é obrigatória");
+    assert(envExampleContent.toLowerCase().includes("per-user") && envExampleContent.toLowerCase().includes("pluggy"), ".env.example deve documentar que Pluggy usa credenciais por usuário");
+    assert(envExampleContent.includes("AI_GLOBAL_FALLBACK_ENABLED=false"), ".env.example deve manter AI_GLOBAL_FALLBACK_ENABLED=false");
+
     console.log("✅ PASSED: firestore.rules aceita recognitionConfidence/recognitionMethod/needsReview válidos");
     console.log("✅ PASSED: firestore.rules rejeita recognitionConfidence fora de 0..1");
     console.log("✅ PASSED: create_sandbox chama recordItemOwnership");
     console.log("✅ PASSED: webhook_listener responde 200 de imediato para a Pluggy");
     console.log("✅ PASSED: logs e textos alinhados para 'server-only' evitando termos de criptografia inconsistente");
     console.log("✅ PASSED: ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS não consta no .env.example");
+    console.log("✅ PASSED: .env.example não possui linhas explicativas sem #");
+    console.log("✅ PASSED: .env.example não descreve GEMINI_API_KEY como obrigatória");
+    console.log("✅ PASSED: .env.example documenta credenciais por usuário da Pluggy");
+    console.log("✅ PASSED: .env.example mantém AI_GLOBAL_FALLBACK_ENABLED=false");
 
     passed++;
   } catch (err: any) {
