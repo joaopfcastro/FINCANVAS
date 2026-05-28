@@ -987,6 +987,56 @@ async function runTests() {
     failed++;
   }
 
+  // 26. Testes obrigatórios da Fase 3.5 - Central de IA Gateway Real
+  try {
+    console.log("=== INICIANDO TESTE 26: FASE 3.5 INTEGRANTES REAIS E GATEWAY SEGURO ===");
+
+    const gatewayContent = fs.readFileSync('./src/lib/ai/aiGateway.ts', 'utf8');
+    const serverContent = fs.readFileSync('./server.ts', 'utf8');
+
+    // 1. aiGateway não deve conter "Phase 1 active"
+    assert(!gatewayContent.includes("Phase 1 active"), "aiGateway não deve conter depoimento de Phase 1 stubs");
+
+    // 2. callGemini não pode ser stub (deve instanciar GoogleGenAI e usar apiKey)
+    assert(gatewayContent.includes("new GoogleGenAI") && gatewayContent.includes("callGemini"), "callGemini não pode ser stub");
+
+    // 3. callOpenAI não pode ser stub (deve fazer fetch para chat/completions)
+    assert(gatewayContent.includes("callOpenAI") && gatewayContent.includes("https://api.openai.com/v1/chat/completions"), "callOpenAI não de ser stub");
+
+    // 4. callAnthropic não pode ser stub (deve fazer fetch para messages com x-api-key)
+    assert(gatewayContent.includes("callAnthropic") && gatewayContent.includes("https://api.anthropic.com/v1/messages"), "callAnthropic não ser stub");
+
+    // 5. callOpenRouter usa endpoint /chat/completions
+    assert(gatewayContent.includes("callOpenRouter") && gatewayContent.includes("https://openrouter.ai/api/v1/chat/completions"), "callOpenRouter deve usar chat/completions");
+
+    // 6. callCustomOpenAICompatible exige baseUrl
+    assert(gatewayContent.includes("callCustomOpenAICompatible") && gatewayContent.includes("buildOpenAICompatibleUrl"), "callCustomOpenAICompatible exige baseUrl");
+
+    // 7. OpenCode API continua usando /v1/chat/completions
+    assert(gatewayContent.includes("callOpenCodeAPI") && gatewayContent.includes("/v1/chat/completions"), "OpenCode API continua usando v1/chat/completions");
+
+    // 8. nenhuma função retorna apiKey (nem gatewayContent tem apiKey retornada em AIResponse)
+    assert(!gatewayContent.includes("return { apiKey") && !gatewayContent.includes("return { ...options, apiKey"), "Nenhuma função de resposta do gateway pode expor a apiKey");
+
+    // 9. /api/ai/generate usa 403 para AI_DISABLED
+    assert(serverContent.includes('status: 403') && serverContent.includes('error: "AI_DISABLED"'), "Deve usar 403 para AI_DISABLED");
+    assert(serverContent.includes('status: 403') && serverContent.includes('error: "AI_OCR_DISABLED"'), "Deve usar 403 para AI_OCR_DISABLED");
+    assert(serverContent.includes('status: 403') && serverContent.includes('error: "AI_CATEGORY_FALLBACK_DISABLED"'), "Deve usar 403 para AI_CATEGORY_FALLBACK_DISABLED");
+    assert(serverContent.includes('status: 403') && serverContent.includes('error: "AI_INSIGHTS_DISABLED"'), "Deve usar 403 para AI_INSIGHTS_DISABLED");
+    assert(serverContent.includes('status: 403') && serverContent.includes('error: "AI_REPORTS_DISABLED"'), "Deve usar 403 para AI_REPORTS_DISABLED");
+
+    // 10. /api/ai/generate usa 428 para AI_CREDENTIALS_MISSING
+    assert(serverContent.includes('status: 428') && serverContent.includes('error: "AI_CREDENTIALS_MISSING"'), "Deve usar 428 para AI_CREDENTIALS_MISSING");
+
+    // 11. /api/gemini continua deprecated e usando processAIGenerateRequest
+    assert(serverContent.includes('processAIGenerateRequest(uid, req.body)') && serverContent.includes('deprecated: true'), "api/gemini continua deprecated");
+
+    passed++;
+  } catch (err: any) {
+    console.error("Erro no teste 26:", err);
+    failed++;
+  }
+
   console.log(`\n=== RESULTADO DOS TESTES: ${passed} Passaram | ${failed} Falharam ===`);
   if (failed > 0) {
     process.exit(1);

@@ -148,6 +148,7 @@ async function safeJson(response: any): Promise<any> {
   return response.json();
 }
 
+// LEGACY DEV-ONLY - NOT USED BY MULTI-PROVIDER ARCHITECTURE
 let aiClient: GoogleGenAI | null = null;
 function getAiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -194,6 +195,7 @@ function getPromptText(contents: any): string {
   return "";
 }
 // Generate highly realistic smart mockup response matching UI expectations on API failure
+// LEGACY DEV-ONLY - NOT USED BY MULTI-PROVIDER ARCHITECTURE
 export function getSimulatedGeminiResponse(model: string, contents: any, config: any): { text: string; [key: string]: any } {
   const ENABLE_SIMULATED_AI_FALLBACK = process.env.ENABLE_SIMULATED_AI_FALLBACK === "true";
   const IS_PRODUCTION = process.env.NODE_ENV === "production";
@@ -1662,7 +1664,7 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
 
     if (!settings.aiEnabled) {
       return {
-        status: 400,
+        status: 403,
         errorResponse: { error: "AI_DISABLED", message: "A funcionalidade de Inteligência Artificial está desabilitada." }
       };
     }
@@ -1670,25 +1672,25 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
     // Check task specific permissions
     if (resolvedTask === 'ocr' && !settings.aiUseForOCR) {
       return {
-        status: 400,
+        status: 403,
         errorResponse: { error: "AI_OCR_DISABLED", message: "A tarefa de OCR via IA está desabilitada." }
       };
     }
     if (resolvedTask === 'categoryFallback' && !settings.aiUseForCategoryFallback) {
       return {
-        status: 400,
+        status: 403,
         errorResponse: { error: "AI_CATEGORY_FALLBACK_DISABLED", message: "O fallback de categoria via IA está desabilitado." }
       };
     }
     if (resolvedTask === 'insight' && !settings.aiUseForInsights) {
       return {
-        status: 400,
+        status: 403,
         errorResponse: { error: "AI_INSIGHTS_DISABLED", message: "Insights automáticos via IA estão desabilitados." }
       };
     }
     if (resolvedTask === 'report' && !settings.aiUseForReports) {
       return {
-        status: 400,
+        status: 403,
         errorResponse: { error: "AI_REPORTS_DISABLED", message: "Relatórios assistidos via IA estão desabilitados." }
       };
     }
@@ -1701,7 +1703,7 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
 
     if (!isOllamaLocal && !secretData) {
       return {
-        status: 400,
+        status: 428,
         errorResponse: { error: "AI_CREDENTIALS_MISSING", message: "Credenciais de IA ausentes ou inválidas." }
       };
     }
@@ -1727,7 +1729,7 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
 
     if (!validation.isValid) {
       return {
-        status: 400,
+        status: 428,
         errorResponse: { error: "AI_CREDENTIALS_MISSING", message: validation.error || "A configuração de IA é inválida." }
       };
     }
