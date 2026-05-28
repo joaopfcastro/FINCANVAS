@@ -390,6 +390,7 @@ export const ReportsView = React.memo(function ReportsView({
       Use tabelas Markdown simples se necessário. Responda em Português.`;
 
       const response = await secureGenerateContent({
+        task: 'report',
         model: 'gemini-3.5-flash',
         contents: promptText
       });

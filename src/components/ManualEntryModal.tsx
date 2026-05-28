@@ -78,6 +78,7 @@ export const ManualEntryModal = React.memo(function ManualEntryModal({ isOpen, o
       ];
 
       const response = await secureGenerateContent({
+        task: 'ocr',
         model: 'gemini-3.5-flash',
         contents: [
           {
@@ -292,6 +293,7 @@ Siga estas instruções críticas:
 3. Se for detectada a origem/banco implícita (ex: "Nubank", "Itaú", "Inter", "Bradesco", "Santander", "Dinheiro", "Pix"), retorne-a no campo correspondente.`;
 
         const response = await secureGenerateContent({
+          task: 'categoryFallback',
           model: 'gemini-3.5-flash',
           contents: prompt,
           config: {

@@ -896,6 +896,97 @@ async function runTests() {
     failed++;
   }
 
+  // 25. Testes obrigatórios da Fase 3 - Central de IA, Gateway e Atribuição de Tarefas
+  try {
+    console.log("=== INICIANDO TESTE 25: FASE 3 CENTRAL DE IA, GATEWAY E TAREFAS ===");
+
+    const serverContent = fs.readFileSync('./server.ts', 'utf8');
+
+    // 1. /api/ai/generate bloqueia IA desativada.
+    assert(serverContent.includes('app.post("/api/ai/generate", requireAuth,'), "POST /api/ai/generate deve usar requireAuth");
+    assert(serverContent.includes('error: "AI_DISABLED"'), "/api/ai/generate deve retornar erro AI_DISABLED quando aiEnabled=false");
+
+    // 2. /api/ai/generate retorna AI_CREDENTIALS_MISSING sem chave.
+    assert(serverContent.includes('error: "AI_CREDENTIALS_MISSING"'), "/api/ai/generate deve retornar AI_CREDENTIALS_MISSING se credencial ausente");
+
+    // 3. /api/ai/generate bloqueia task não permitida.
+    assert(serverContent.includes('error: "AI_OCR_DISABLED"'), "Deve validar tarefa ocr e retornar AI_OCR_DISABLED se desligada");
+    assert(serverContent.includes('error: "AI_CATEGORY_FALLBACK_DISABLED"'), "Deve validar tarefa categoryFallback e retornar AI_CATEGORY_FALLBACK_DISABLED se desligada");
+    assert(serverContent.includes('error: "AI_INSIGHTS_DISABLED"'), "Deve validar tarefa insight e retornar AI_INSIGHTS_DISABLED se desligada");
+    assert(serverContent.includes('error: "AI_REPORTS_DISABLED"'), "Deve validar tarefa report e retornar AI_REPORTS_DISABLED se desligada");
+    assert(serverContent.includes('error: "AI_INVALID_TASK"'), "Deve validar tarefas e rejeitar tarefas inválidas com AI_INVALID_TASK");
+
+    // 4. /api/ai/generate nunca retorna apiKey.
+    assert(!serverContent.includes('return res.json({ apiKey') && !serverContent.includes('return res.status(200).json({ apiKey'), "/api/ai/generate nunca deve retornar a apiKey");
+
+    // 5, 6, 7. secureGenerateContent chama /api/ai/generate, envia Authorization Bearer, envia task.
+    const geminiMod = await import('./src/lib/gemini.js');
+    const { secureGenerateContent } = geminiMod;
+
+    const originalFetch = (global as any).fetch;
+    let fetchedUrl = '';
+    let fetchedOpts: any = null;
+    (global as any).fetch = async (url: string, opts: any) => {
+      fetchedUrl = url;
+      fetchedOpts = opts;
+      return {
+        ok: true,
+        json: async () => ({ text: 'mock AI response' })
+      };
+    };
+
+    const originalAuth = await import('./src/firebase.js').then(m => m.auth);
+    const mockUser = {
+      getIdToken: async () => 'test-id-token'
+    };
+    Object.defineProperty(originalAuth, 'currentUser', {
+      get: () => mockUser,
+      configurable: true
+    });
+
+    const resSec = await secureGenerateContent({
+      task: 'insight',
+      model: 'test-model',
+      contents: 'hello test'
+    });
+
+    assert(fetchedUrl === '/api/ai/generate', "secureGenerateContent deve chamar /api/ai/generate");
+    assert(fetchedOpts?.headers?.['Authorization'] === 'Bearer test-id-token', "secureGenerateContent deve enviar Authorization Bearer");
+    const sentBody = JSON.parse(fetchedOpts.body);
+    assert(sentBody.task === 'insight', "secureGenerateContent deve enviar a task correto");
+
+    // Restore
+    (global as any).fetch = originalFetch;
+
+    // 8. /api/gemini está deprecated.
+    assert(serverContent.includes('deprecated: true'), "/api/gemini deve retornar deprecated: true");
+
+    // 9. /api/gemini respeita permissões.
+    assert(serverContent.includes('app.post("/api/gemini", requireAuth, async (req, res) => {') || serverContent.includes('app.post("/api/gemini", requireAuth,'), "/api/gemini de usar requireAuth");
+    assert(serverContent.includes('processAIGenerateRequest(uid, req.body)'), "/api/gemini deve usar internamente a lógica de processAIGenerateRequest para respeitar permissões");
+
+    // 10. ImportView usa task ocr.
+    const importViewText = fs.readFileSync('./src/components/ImportView.tsx', 'utf8');
+    assert(importViewText.includes("task: 'ocr'"), "ImportView deve conter a chamada de secureGenerateContent com a tarefa 'ocr'");
+
+    // 11. ManualEntryModal usa task ocr e categoryFallback.
+    const manualEntryText = fs.readFileSync('./src/components/ManualEntryModal.tsx', 'utf8');
+    assert(manualEntryText.includes("task: 'ocr'") && manualEntryText.includes("task: 'categoryFallback'"), "ManualEntryModal deve conter as tarefas 'ocr' e 'categoryFallback'");
+
+    // 12. DashboardView usa task insight.
+    const dashboardText = fs.readFileSync('./src/components/DashboardView.tsx', 'utf8');
+    assert(dashboardText.includes("task: 'insight'"), "DashboardView deve conter a tarefa 'insight'");
+
+    // 13. ReportsView usa task report.
+    const reportsText = fs.readFileSync('./src/components/ReportsView.tsx', 'utf8');
+    assert(reportsText.includes("task: 'report'"), "ReportsView deve conter a tarefa 'report'");
+
+    passed++;
+  } catch (err: any) {
+    console.error("Erro no teste 25:", err);
+    failed++;
+  }
+
   console.log(`\n=== RESULTADO DOS TESTES: ${passed} Passaram | ${failed} Falharam ===`);
   if (failed > 0) {
     process.exit(1);

@@ -1,3 +1,5 @@
+import { auth } from '../firebase';
+
 export enum Type {
   ARRAY = 'ARRAY',
   OBJECT = 'OBJECT',
@@ -8,23 +10,37 @@ export enum Type {
 }
 
 export interface GenerateContentParams {
-  model: string;
+  model?: string;
   contents: any;
   config?: any;
+  task?: string;
 }
 
 export const secureGenerateContent = async (params: GenerateContentParams) => {
-  const response = await fetch('/api/gemini', {
+  const user = auth.currentUser;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+
+  if (user) {
+    const token = await user.getIdToken();
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const response = await fetch('/api/ai/generate', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(params),
+    headers,
+    body: JSON.stringify({
+      task: params.task || 'general',
+      model: params.model,
+      contents: params.contents,
+      config: params.config,
+    }),
   });
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || 'Falha na comunicação com o servidor de IA.');
+    throw new Error(errorData.error || errorData.message || 'Falha na comunicação com o servidor de IA.');
   }
 
   return response.json();

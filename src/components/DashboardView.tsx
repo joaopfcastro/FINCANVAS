@@ -511,6 +511,7 @@ export const DashboardView = React.memo(function DashboardView({
 
       const promptText = `Analise financeiramente (3 parágrafos curtos: o que está bom, alerta, dica) das transações deste período:\n${currentMonthTransactions.slice(0, 50).map(d => `${d.desc} | Cat: ${d.cat} | R$ ${d.amount}`).join('\n')}`;
       const response = await secureGenerateContent({
+        task: 'insight',
         model: 'gemini-3.5-flash',
         contents: promptText
       });
@@ -583,6 +584,7 @@ export const DashboardView = React.memo(function DashboardView({
 
       const promptText = `Despesa Maior: ${maiorDespesa.desc} (${maiorDespesa.cat}) no valor de R$ ${Math.abs(maiorDespesa.amount).toFixed(2)}. Dê 1 dica curta e amigável sobre como repensar ou otimizar essa categoria de gasto em Português.`;
       const response = await secureGenerateContent({
+        task: 'insight',
         model: 'gemini-3.5-flash',
         contents: promptText
       });

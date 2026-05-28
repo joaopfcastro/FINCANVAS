@@ -118,6 +118,7 @@ Siga estritamente estas diretrizes de extração:
 Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, sem explicações textuais fora do JSON.`;
 
         const response = await secureGenerateContent({
+          task: 'ocr',
           model: 'gemini-3.5-flash',
           contents: {
             parts: [...parts, { text: prompt }],

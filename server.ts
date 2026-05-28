@@ -1412,9 +1412,8 @@ async function startServer() {
 
       let geminiMapped: Record<string, { cat: string; desc: string }> = {};
 
-      const ai = getAiClient();
-      if (lowConfidenceList.length > 0 && ai) {
-        console.log(`[Pluggy Sync AI Fallback] Sending ${lowConfidenceList.length} transactions to Gemini fallback process...`);
+      if (lowConfidenceList.length > 0) {
+        console.log(`[Pluggy Sync AI Fallback] Sending ${lowConfidenceList.length} transactions to AI fallback process...`);
         const promptSystem = `Você é um excelente assistente financeiro de elite brasileiro. Algumas transações com baixa confiança local precisam de classificação e pós-processamento. Mapeie-as para estas categorias válidas: ${JSON.stringify(userCategories)}.
 Você NÃO PODE alterar o tipo da transação ou direção financeira. A direção financeira já foi calculada heuristicamente e está correta em 'detectedDirection' ('Receita' ou 'Despesa').
 
@@ -1431,8 +1430,8 @@ ${JSON.stringify(lowConfidenceList.map(r => ({
 Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "...", "desc": "..."}]. Não adicione textos adicionais fora do JSON.`;
 
         try {
-          const result = await ai.models.generateContent({
-            model: "gemini-3.5-flash",
+          const result = await processAIGenerateRequest(uid, {
+            task: "categoryFallback",
             contents: promptSystem,
             config: {
               responseMimeType: "application/json",
@@ -1451,15 +1450,19 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
             }
           });
 
-          const geminiText = result.text || "[]";
-          const parsedGemini = JSON.parse(geminiText) as any[];
-          for (const item of parsedGemini) {
-            geminiMapped[item.pluggyId] = {
-              cat: item.cat,
-              desc: item.desc
-            };
+          if (result.status === 200 && result.successResponse?.text) {
+            const geminiText = result.successResponse.text || "[]";
+            const parsedGemini = JSON.parse(geminiText) as any[];
+            for (const item of parsedGemini) {
+              geminiMapped[item.pluggyId] = {
+                cat: item.cat,
+                desc: item.desc
+              };
+            }
+            console.log(`[Pluggy Sync AI Fallback] AI successfully categorized ${parsedGemini.length} transactions via provider ${result.successResponse.provider}.`);
+          } else {
+            console.warn("[Pluggy Sync AI Fallback] AI fallback was bypassed/disabled:", result.errorResponse?.error || result.errorResponse?.message);
           }
-          console.log(`[Pluggy Sync AI Fallback] Gemini successfully categorized ${parsedGemini.length} transactions.`);
         } catch (aiError: any) {
           console.error("[Pluggy Sync AI Fallback Error]: AI request failed. Reverting to local heuristic fallback.", aiError?.message || aiError);
         }
@@ -1635,6 +1638,132 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         error: err.message, 
         code: err.code || "PLUGGY_SYNC_FAILED" 
       });
+    }
+  });
+
+  // --- SECURE MULTI-PROVIDER AI BACKEND ENDPOINTS (FASE 3) ---
+
+  async function processAIGenerateRequest(uid: string, body: any): Promise<{ status: number; errorResponse?: { error: string; message: string }; successResponse?: any }> {
+    const { task, model, contents, config } = body;
+    const resolvedTask = task || 'general';
+
+    const validTasks = ['ocr', 'categoryFallback', 'insight', 'report', 'general'];
+    if (!validTasks.includes(resolvedTask)) {
+      return {
+        status: 400,
+        errorResponse: { error: "AI_INVALID_TASK", message: "Tarefa de IA inválida ou não especificada." }
+      };
+    }
+
+    // Load settings
+    const settingsDoc = await db.collection("users").doc(uid).collection("settings").doc("ai").get();
+    const defaults = getDefaultAISettings();
+    const settings = settingsDoc.exists ? { ...defaults, ...settingsDoc.data() } : defaults;
+
+    if (!settings.aiEnabled) {
+      return {
+        status: 400,
+        errorResponse: { error: "AI_DISABLED", message: "A funcionalidade de Inteligência Artificial está desabilitada." }
+      };
+    }
+
+    // Check task specific permissions
+    if (resolvedTask === 'ocr' && !settings.aiUseForOCR) {
+      return {
+        status: 400,
+        errorResponse: { error: "AI_OCR_DISABLED", message: "A tarefa de OCR via IA está desabilitada." }
+      };
+    }
+    if (resolvedTask === 'categoryFallback' && !settings.aiUseForCategoryFallback) {
+      return {
+        status: 400,
+        errorResponse: { error: "AI_CATEGORY_FALLBACK_DISABLED", message: "O fallback de categoria via IA está desabilitado." }
+      };
+    }
+    if (resolvedTask === 'insight' && !settings.aiUseForInsights) {
+      return {
+        status: 400,
+        errorResponse: { error: "AI_INSIGHTS_DISABLED", message: "Insights automáticos via IA estão desabilitados." }
+      };
+    }
+    if (resolvedTask === 'report' && !settings.aiUseForReports) {
+      return {
+        status: 400,
+        errorResponse: { error: "AI_REPORTS_DISABLED", message: "Relatórios assistidos via IA estão desabilitados." }
+      };
+    }
+
+    // Load secret
+    const secretDoc = await db.collection("users").doc(uid).collection("secrets").doc("ai").get();
+    const secretData = secretDoc.exists ? secretDoc.data() : null;
+
+    const isOllamaLocal = settings.provider === "ollama" && isLocalBaseUrl(settings.baseUrl || "");
+
+    if (!isOllamaLocal && !secretData) {
+      return {
+        status: 400,
+        errorResponse: { error: "AI_CREDENTIALS_MISSING", message: "Credenciais de IA ausentes ou inválidas." }
+      };
+    }
+
+    if (secretData) {
+      if (secretData.provider !== settings.provider) {
+        return {
+          status: 400,
+          errorResponse: { error: "AI_PROVIDER_SECRET_MISMATCH", message: "O provedor selecionado não corresponde à credencial de IA salva." }
+        };
+      }
+    }
+
+    const finalApiKey = secretData?.apiKey;
+    const finalBaseUrl = settings.baseUrl;
+
+    const validation = validateProviderConnectionConfig(
+      settings.provider,
+      finalBaseUrl,
+      finalApiKey,
+      process.env.NODE_ENV || "development"
+    );
+
+    if (!validation.isValid) {
+      return {
+        status: 400,
+        errorResponse: { error: "AI_CREDENTIALS_MISSING", message: validation.error || "A configuração de IA é inválida." }
+      };
+    }
+
+    const response = await generateAIContent({
+      provider: settings.provider,
+      apiKey: finalApiKey,
+      baseUrl: finalBaseUrl,
+      model: model || settings.model || getDefaultModel(settings.provider),
+      task: resolvedTask,
+      contents,
+      config
+    });
+
+    return {
+      status: 200,
+      successResponse: {
+        text: response.text,
+        provider: response.provider,
+        model: response.model
+      }
+    };
+  }
+
+  // POST /api/ai/generate
+  app.post("/api/ai/generate", requireAuth, async (req, res) => {
+    const uid = (req as any).user.uid;
+    try {
+      const result = await processAIGenerateRequest(uid, req.body);
+      if (result.errorResponse) {
+        return res.status(result.status).json(result.errorResponse);
+      }
+      return res.status(result.status).json(result.successResponse);
+    } catch (err: any) {
+      console.error("[POST /api/ai/generate error]:", err.message);
+      return res.status(500).json({ error: "Erro interno no servidor de IA." });
     }
   });
 
@@ -1957,78 +2086,21 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
     }
   });
 
-  // Secure server-side endpoint for Gemini requests
-  app.post("/api/gemini", async (req, res) => {
-    const { model, contents, config } = req.body;
-
-    if (!model || !contents) {
-      return res.status(400).json({ error: "Missing required model or contents parameters." });
-    }
-
-    const ENABLE_SIMULATED_AI_FALLBACK = process.env.ENABLE_SIMULATED_AI_FALLBACK === "true";
-    const IS_PRODUCTION = process.env.NODE_ENV === "production";
-
+  // Secure server-side endpoint for Gemini requests (DEPRECATED: Use /api/ai/generate instead)
+  app.post("/api/gemini", requireAuth, async (req, res) => {
+    const uid = (req as any).user.uid;
     try {
-      const ai = getAiClient();
-      if (!ai) {
-        if (IS_PRODUCTION) {
-          console.error("Gemini unavailable and simulated fallback disabled in production");
-          return res.status(500).json({ error: "A inteligência artificial está temporariamente indisponível." });
-        }
-        if (!ENABLE_SIMULATED_AI_FALLBACK) {
-          console.warn("Gemini unavailable and simulated fallback disabled");
-          return res.status(500).json({ error: "A inteligência artificial está desabilitada no ambiente local." });
-        }
-
-        console.log("Simulated Gemini fallback enabled for development only");
-        const fallback = getSimulatedGeminiResponse(model, contents, config);
-        return res.json({
-          text: fallback.text,
-          ...fallback
-        });
+      const result = await processAIGenerateRequest(uid, req.body);
+      if (result.errorResponse) {
+        return res.status(result.status).json(result.errorResponse);
       }
-
-      const result = await ai.models.generateContent({
-        model,
-        contents,
-        config
+      return res.status(result.status).json({
+        ...result.successResponse,
+        deprecated: true
       });
-
-      res.json({
-        text: result.text,
-        ...result
-      });
-    } catch (error: any) {
-      console.error("Erro na API Gemini (Backend):", error);
-      
-      const errorMsg = String(error.message || error);
-      if (
-        errorMsg.includes("RESOURCE_EXHAUSTED") ||
-        errorMsg.includes("429") ||
-        errorMsg.includes("spending cap") ||
-        errorMsg.includes("quota") ||
-        errorMsg.includes("limit") ||
-        errorMsg.includes("key") ||
-        errorMsg.includes("APIError")
-      ) {
-        if (IS_PRODUCTION) {
-          console.error("Gemini unavailable and simulated fallback disabled in production");
-          return res.status(500).json({ error: "Limite de cota excedido ou autenticação inválida." });
-        }
-        if (!ENABLE_SIMULATED_AI_FALLBACK) {
-          console.warn("Gemini unavailable and simulated fallback disabled");
-          return res.status(500).json({ error: "Limite de cota e o simulador está desativado." });
-        }
-
-        console.log("Simulated Gemini fallback enabled for development only");
-        const fallback = getSimulatedGeminiResponse(model, contents, config);
-        return res.json({
-          text: fallback.text,
-          ...fallback
-        });
-      }
-
-      res.status(500).json({ error: error.message || "Erro de comunicação com o serviço Gemini." });
+    } catch (err: any) {
+      console.error("[POST /api/gemini error]:", err.message);
+      return res.status(500).json({ error: "Erro interno no servidor de IA." });
     }
   });
 
