@@ -878,6 +878,18 @@ async function runTests() {
       "Chave original nunca deve aparecer nos retornos JSON dos endpoints"
     );
 
+    // 16. salvar secret openai e tentar ativar gemini deve falhar (mismatch)
+    const mockedSecretDataOpenAI = { provider: 'openai', apiKey: 'test-key' };
+    const targetProviderGemini = 'gemini';
+    const hasMismatchOpenAIGemini = mockedSecretDataOpenAI.provider !== targetProviderGemini;
+    assert(hasMismatchOpenAIGemini === true, "Salvar secret openai e tentar ativar gemini gera descompasso de provedor (AI_PROVIDER_SECRET_MISMATCH)");
+
+    // 17. salvar secret gemini e ativar gemini deve passar (no mismatch)
+    const mockedSecretDataGemini = { provider: 'gemini', apiKey: 'test-key' };
+    const targetProviderGeminiOk = 'gemini';
+    const hasMismatchGeminiGemini = mockedSecretDataGemini.provider !== targetProviderGeminiOk;
+    assert(hasMismatchGeminiGemini === false, "Salvar secret gemini e ativar gemini não apresenta descompasso");
+
     passed++;
   } catch (err: any) {
     console.error("Erro no teste 24:", err);

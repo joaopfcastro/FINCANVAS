@@ -1889,28 +1889,45 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
     }
 
     try {
-      if (aiEnabled === true) {
-        const isOllamaLocal = provider === "ollama" && isLocalBaseUrl(baseUrl || "");
-        
-        if (!isOllamaLocal) {
-          const secretDoc = await db.collection("users").doc(uid).collection("secrets").doc("ai").get();
-          if (!secretDoc.exists) {
-            return res.status(400).json({ error: "Não é possível ativar a IA sem credenciais configuradas." });
-          }
+      let finalModel = model;
+      let finalBaseUrl = baseUrl;
 
-          const secretData = secretDoc.data()!;
-          if (provider === "opencode_api") {
-            const validation = validateProviderConnectionConfig(
-              "opencode_api",
-              baseUrl || secretData.baseUrl,
-              secretData.apiKey,
-              process.env.NODE_ENV || "development"
-            );
-            if (!validation.isValid) {
-              return res.status(400).json({ error: validation.error || "A configuração salva para o OpenCode API é inválida." });
-            }
+      if (aiEnabled === true) {
+        const secretDoc = await db.collection("users").doc(uid).collection("secrets").doc("ai").get();
+        const secretData = secretDoc.exists ? secretDoc.data() : null;
+
+        const checkBaseUrl = (baseUrl !== undefined ? baseUrl : (secretData?.baseUrl || "")) || "";
+        const isOllamaLocal = provider === "ollama" && isLocalBaseUrl(checkBaseUrl);
+
+        if (!isOllamaLocal && !secretData) {
+          return res.status(400).json({ error: "Não é possível ativar a IA sem credenciais configuradas." });
+        }
+
+        if (secretData) {
+          if (secretData.provider !== provider) {
+            return res.status(400).json({
+              error: "AI_PROVIDER_SECRET_MISMATCH",
+              message: "O provedor selecionado não corresponde à credencial de IA salva."
+            });
           }
         }
+
+        finalModel = model || secretData?.model || getDefaultModel(provider);
+        finalBaseUrl = (baseUrl !== undefined ? baseUrl : (secretData?.baseUrl || "")) || "";
+
+        const validation = validateProviderConnectionConfig(
+          provider,
+          finalBaseUrl,
+          secretData?.apiKey,
+          process.env.NODE_ENV || "development"
+        );
+
+        if (!validation.isValid) {
+          return res.status(400).json({ error: validation.error || "A configuração de IA é inválida." });
+        }
+      } else {
+        finalModel = model || getDefaultModel(provider);
+        finalBaseUrl = baseUrl || "";
       }
 
       const settingsRef = db.collection("users").doc(uid).collection("settings").doc("ai");
@@ -1918,8 +1935,8 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       const settingsToSave = {
         aiEnabled: !!aiEnabled,
         provider,
-        model: model || getDefaultModel(provider),
-        baseUrl: baseUrl || "",
+        model: finalModel,
+        baseUrl: finalBaseUrl,
         aiUseForOCR: !!aiUseForOCR,
         aiUseForCategoryFallback: !!aiUseForCategoryFallback,
         aiUseForInsights: !!aiUseForInsights,
