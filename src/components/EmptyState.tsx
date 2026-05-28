@@ -26,7 +26,11 @@ export function EmptyState({
             <BarChart3 className="w-10 h-10 sm:w-12 sm:h-12 text-emerald-500 sm:text-emerald-500" />
           </div>
           <h3 className="text-xl sm:text-2xl font-black text-slate-800 tracking-tight mb-2 sm:mb-3">Nenhum dado na sua nuvem</h3>
-          <p className="text-slate-500 max-w-sm mx-auto text-[15px] sm:text-sm leading-relaxed mb-6 sm:mb-8">Vá para a aba "Importar Dados" e envie seus extratos bancários. Eles serão importados e analisados automaticamente.</p>
+          <p className="text-slate-500 max-w-sm mx-auto text-[15px] sm:text-sm leading-relaxed mb-6 sm:mb-8">
+            {pluggyItemIdsCount > 0
+              ? 'Importe seus extratos ou sincronize suas contas Pluggy para começar a visualizar sua vida financeira.'
+              : 'Vá para a aba Importar Dados e envie seus extratos bancários para começar.'}
+          </p>
           
           <div className="flex flex-col sm:flex-row gap-3 w-full justify-center">
             <button onClick={onNavigateImport} className="px-6 py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-[20px] sm:rounded-2xl hover:shadow-lg transition-all text-sm active:scale-[0.98] sm:active:scale-100 flex items-center justify-center gap-2 flex-shrink-0">
