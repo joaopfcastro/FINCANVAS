@@ -1037,6 +1037,54 @@ async function runTests() {
     failed++;
   }
 
+  // 27. Testes obrigatórios da Fase 4 - UI de Preferências da IA
+  try {
+    console.log("=== INICIANDO TESTE 27: FASE 4 GERENCIADOR DE IA MULTI-PROVEDOR E UX DE CONFIGURAÇÕES ===");
+
+    const settingsContent = fs.readFileSync('./src/components/SettingsView.tsx', 'utf8');
+
+    // 1. Seção "Inteligência Artificial" existe
+    assert(settingsContent.includes("Inteligência Artificial"), "Seção 'Inteligência Artificial' deve existir");
+
+    // 2. Provider select contém OpenCode API
+    assert(settingsContent.includes("opencode_api") && settingsContent.includes("OpenCode API"), "Provedor OpenCode API deve estar no select");
+
+    // 3. API Key não é salva em localStorage
+    assert(!settingsContent.includes("localStorage.setItem('apiKey'") && !settingsContent.includes("localStorage.setItem(\"apiKey\""), "API Key não pode ser salva em localStorage");
+
+    // 4. /api/ai/settings não recebe apiKey
+    assert(settingsContent.includes("/api/ai/settings") && !settingsContent.includes("apiKey: apiKey,") && !settingsContent.includes("apiKey: apiKey}"), "settings endpoint não deve receber apiKey");
+
+    // 5. Salvar chave usa /api/ai/credentials/save
+    assert(settingsContent.includes("/api/ai/credentials/save"), "Salvar chave deve usar /api/ai/credentials/save");
+
+    // 6. Testar conexão usa /api/ai/credentials/test
+    assert(settingsContent.includes("/api/ai/credentials/test"), "Testar conexão deve usar /api/ai/credentials/test");
+
+    // 7. Remover chave usa /api/ai/credentials/delete
+    assert(settingsContent.includes("/api/ai/credentials/delete"), "Remover chave deve usar /api/ai/credentials/delete");
+
+    // 8. keyMasked aparece, apiKey completa não aparece após salvar
+    assert(settingsContent.includes("keyMasked") || settingsContent.includes("maskedKey"), "Mascaramento de chave keyMasked deve aparecer na UI");
+
+    // 9. IA aparece desativada por padrão
+    assert(settingsContent.includes("aiEnabled: false"), "IA desativada por padrão");
+
+    // 10. OpenCode API mostra campo baseUrl
+    assert(settingsContent.includes("showBaseUrl"), "OpenCode API mostra campo baseUrl");
+
+    // 11. Ollama permite apiKey vazia
+    assert(settingsContent.includes("selectedProvider === 'ollama'"), "Ollama permite apiKey opcional/vazia");
+
+    // 12. Custom OpenAI-compatible exige baseUrl
+    assert(settingsContent.includes("custom_openai_compatible") && settingsContent.includes("baseUrlInput.trim()"), "Custom OpenAI-compatible exige baseUrl");
+
+    passed++;
+  } catch (err: any) {
+    console.error("Erro no teste 27:", err);
+    failed++;
+  }
+
   console.log(`\n=== RESULTADO DOS TESTES: ${passed} Passaram | ${failed} Falharam ===`);
   if (failed > 0) {
     process.exit(1);

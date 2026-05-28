@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { User, signOut, sendPasswordResetEmail, updateProfile } from 'firebase/auth';
 import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import { UserProfile, Transaction } from '../App';
@@ -6,6 +6,12 @@ import { doc, updateDoc, serverTimestamp, collection, setDoc, deleteDoc } from '
 import { PluggySettingsPanel } from './PluggySettingsPanel';
 import { User as UserIcon, Bell, LogOut, CloudCog, Download, UploadCloud, Trash2, Loader2, Database, Palette, CheckCircle2, ChevronLeft, ChevronRight, CreditCard, Brain } from 'lucide-react';
 import { toast } from 'sonner';
+import { 
+  PROVIDER_REGISTRY, 
+  getDefaultModel, 
+  isLocalBaseUrl 
+} from '../lib/ai/providerRegistry';
+import { AIProvider } from '../lib/ai/types';
 
 function normalizeText(text: string): string {
   if (!text) return '';
@@ -53,8 +59,325 @@ interface SettingsViewProps {
 }
 
 export const SettingsView = React.memo(function SettingsView({ user, profile, transactions, learnedRules = [] }: SettingsViewProps) {
-  const [activePanel, setActivePanel] = useState<'perfil' | 'notif' | 'ia' | 'aparencia' | 'pluggy' | 'regras'>('perfil');
+  const [activePanel, setActivePanel] = useState<'perfil' | 'notif' | 'dados' | 'ia' | 'aparencia' | 'pluggy' | 'regras'>('perfil');
   const [isMobileMenu, setIsMobileMenu] = useState(true);
+
+  // States for AI Settings & credentials
+  const [aiSettings, setAiSettings] = useState({
+    aiEnabled: false,
+    provider: 'gemini' as AIProvider,
+    model: 'gemini-3.5-flash',
+    baseUrl: '',
+    aiUseForOCR: false,
+    aiUseForCategoryFallback: false,
+    aiUseForInsights: false,
+    aiUseForReports: false,
+    aiAlwaysAskBeforeSending: true,
+  });
+  const [isCredentialSaved, setIsCredentialSaved] = useState(false);
+  const [savedProvider, setSavedProvider] = useState<string>('');
+  const [maskedKey, setMaskedKey] = useState<string>('');
+  const [savedModel, setSavedModel] = useState<string>('');
+  const [savedBaseUrl, setSavedBaseUrl] = useState<string>('');
+  
+  // local edits (form)
+  const [selectedProvider, setSelectedProvider] = useState<AIProvider>('gemini');
+  const [selectedModel, setSelectedModel] = useState<string>('gemini-3.5-flash');
+  const [baseUrlInput, setBaseUrlInput] = useState<string>('');
+  const [apiKeyInput, setApiKeyInput] = useState<string>('');
+  
+  // test results / indicators
+  const [testStatus, setTestStatus] = useState<'none' | 'success' | 'error'>('none');
+  const [testMessage, setTestMessage] = useState<string>('');
+  
+  const [loadingStatus, setLoadingStatus] = useState(false);
+  const [savingAiSettings, setSavingAiSettings] = useState(false);
+  const [testingConnection, setTestingConnection] = useState(false);
+
+  // AI Connection Validations
+  const showBaseUrl = ['openrouter', 'ollama', 'custom_openai_compatible', 'opencode_api'].includes(selectedProvider);
+  
+  const isOllamaLocal = selectedProvider === 'ollama' && isLocalBaseUrl(baseUrlInput || 'http://localhost:11434');
+  const isCurrentProviderSaved = isCredentialSaved && (savedProvider === selectedProvider);
+  const canEnableAI = isCurrentProviderSaved || isOllamaLocal;
+
+  const isApiKeyRequired = () => {
+    if (['gemini', 'openai', 'anthropic', 'openrouter'].includes(selectedProvider)) {
+      return true;
+    }
+    if (selectedProvider === 'ollama') {
+      return false;
+    }
+    if (selectedProvider === 'custom_openai_compatible') {
+      return false; // optional
+    }
+    if (selectedProvider === 'opencode_api') {
+      return !isLocalBaseUrl(baseUrlInput);
+    }
+    return false;
+  };
+
+  // Fetch initial AI Status and Settings
+  useEffect(() => {
+    let active = true;
+    const loadData = async () => {
+      try {
+        setLoadingStatus(true);
+        const token = await user.getIdToken();
+        const res = await fetch('/api/ai/credentials/status', {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        if (!res.ok) throw new Error('Erro na resposta do backend');
+        const data = await res.json();
+        if (active) {
+          setIsCredentialSaved(data.configured);
+          if (data.configured) {
+            setSavedProvider(data.provider || '');
+            setMaskedKey(data.keyMasked || '');
+            setSavedModel(data.model || '');
+            setSavedBaseUrl(data.baseUrl || '');
+            
+            setSelectedProvider(data.provider || 'gemini');
+            setSelectedModel(data.model || '');
+            setBaseUrlInput(data.baseUrl || '');
+          }
+          if (data.settings) {
+            setAiSettings(data.settings);
+            if (!data.configured) {
+              setSelectedProvider(data.settings.provider || 'gemini');
+              setSelectedModel(data.settings.model || '');
+              setBaseUrlInput(data.settings.baseUrl || '');
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Erro ao carregar status de IA:', err);
+      } finally {
+        if (active) setLoadingStatus(false);
+      }
+    };
+    loadData();
+    return () => { active = false; };
+  }, [user]);
+
+  // Saving settings logic (without apiKey inside body!)
+  const handleToggleAI = async (checked: boolean) => {
+    if (checked && !canEnableAI) {
+      toast.error("Configure e salve sua chave de acesso primeiro para ativar a Inteligência Artificial (exceto para instâncias locais do Ollama).");
+      return;
+    }
+    
+    try {
+      setSavingAiSettings(true);
+      const token = await user.getIdToken();
+      const res = await fetch('/api/ai/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          ...aiSettings,
+          aiEnabled: checked,
+          provider: selectedProvider,
+          model: selectedModel,
+          baseUrl: baseUrlInput
+        })
+      });
+      
+      const result = await safeJsonClient(res);
+      if (res.ok && result.success) {
+        setAiSettings(result.settings);
+        toast.success(checked ? "Inteligência Artificial ativada com sucesso!" : "Inteligência Artificial desativada.");
+      } else {
+        toast.error(result.error || result.message || "Falha ao salvar as configurações.");
+      }
+    } catch (err: any) {
+      toast.error("Erro de conexão ao salvar configurações: " + err.message);
+    } finally {
+      setSavingAiSettings(false);
+    }
+  };
+
+  const handleTogglePermission = async (field: string, value: boolean) => {
+    try {
+      setSavingAiSettings(true);
+      const token = await user.getIdToken();
+      
+      const nextSettings = {
+        ...aiSettings,
+        [field]: value
+      };
+      
+      const res = await fetch('/api/ai/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(nextSettings)
+      });
+      
+      const result = await safeJsonClient(res);
+      if (res.ok && result.success) {
+        setAiSettings(result.settings);
+        toast.success("Opção de IA atualizada.");
+      } else {
+        toast.error(result.error || result.message || "Falha ao salvar configuração.");
+      }
+    } catch (err: any) {
+      toast.error("Erro de de conexão ao salvar configurações: " + err.message);
+    } finally {
+      setSavingAiSettings(false);
+    }
+  };
+
+  const handleSaveCredential = async () => {
+    if (!selectedProvider) {
+      toast.error("Selecione um provedor.");
+      return;
+    }
+    
+    if ((selectedProvider === 'custom_openai_compatible' || selectedProvider === 'opencode_api') && !baseUrlInput.trim()) {
+      toast.error("A Base URL é obrigatória para este provedor.");
+      return;
+    }
+    
+    if (selectedProvider === 'opencode_api' && !apiKeyInput.trim() && !isLocalBaseUrl(baseUrlInput)) {
+      toast.error("A API Key é obrigatória para instâncias remotas da OpenCode API.");
+      return;
+    }
+
+    if (['gemini', 'openai', 'anthropic', 'openrouter'].includes(selectedProvider) && !apiKeyInput.trim() && !isCurrentProviderSaved) {
+      toast.error("A API Key é obrigatória para este provedor.");
+      return;
+    }
+    
+    try {
+      setSavingAiSettings(true);
+      const token = await user.getIdToken();
+      const res = await fetch('/api/ai/credentials/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          provider: selectedProvider,
+          apiKey: apiKeyInput.trim() || undefined,
+          baseUrl: baseUrlInput.trim() || undefined,
+          model: selectedModel.trim() || undefined
+        })
+      });
+      
+      const result = await safeJsonClient(res);
+      if (res.ok && result.configured) {
+        setIsCredentialSaved(true);
+        setSavedProvider(result.provider);
+        setMaskedKey(result.keyMasked);
+        setSavedModel(result.model);
+        setSavedBaseUrl(result.baseUrl);
+        
+        setApiKeyInput('');
+        toast.success("Credencial salva com sucesso!");
+      } else {
+        toast.error(result.error || result.message || "Erro ao salvar credenciais.");
+      }
+    } catch (err: any) {
+      toast.error("Erro ao salvar credencial: " + err.message);
+    } finally {
+      setSavingAiSettings(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    try {
+      setTestingConnection(true);
+      setTestStatus('none');
+      setTestMessage('');
+      const token = await user.getIdToken();
+      
+      const hasModifications = selectedProvider !== savedProvider || baseUrlInput !== savedBaseUrl || selectedModel !== savedModel || !!apiKeyInput;
+      
+      const body: any = {};
+      if (hasModifications) {
+        body.provider = selectedProvider;
+        body.apiKey = apiKeyInput || undefined;
+        body.baseUrl = baseUrlInput || undefined;
+        body.model = selectedModel || undefined;
+      }
+      
+      const res = await fetch('/api/ai/credentials/test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(body)
+      });
+      
+      const result = await safeJsonClient(res);
+      if (res.ok && result.success) {
+        setTestStatus('success');
+        setTestMessage(result.message || "Conexão testada com sucesso!");
+        toast.success("Teste de conexão bem-sucedido!");
+      } else {
+        setTestStatus('error');
+        setTestMessage(result.error || result.message || "Erro ao testar conexão.");
+        toast.error("Erro no teste de conexão.");
+      }
+    } catch (err: any) {
+      setTestStatus('error');
+      setTestMessage(err.message || "Erro ao testar conexão.");
+      toast.error("Erro ao testar conexão: " + err.message);
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
+  const handleRemoveCredential = async () => {
+    try {
+      setSavingAiSettings(true);
+      const token = await user.getIdToken();
+      const res = await fetch('/api/ai/credentials/delete', {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      const result = await safeJsonClient(res);
+      if (res.ok) {
+        setIsCredentialSaved(false);
+        setSavedProvider('');
+        setMaskedKey('');
+        setSavedModel('');
+        setSavedBaseUrl('');
+        setApiKeyInput('');
+        setTestStatus('none');
+        setTestMessage('');
+        
+        setAiSettings(prev => ({
+          ...prev,
+          aiEnabled: false,
+          aiUseForOCR: false,
+          aiUseForCategoryFallback: false,
+          aiUseForInsights: false,
+          aiUseForReports: false
+        }));
+        
+        toast.success("Credenciais de IA removidas e IA desativada.");
+      } else {
+        toast.error(result.error || result.message || "Falha ao remover credenciais.");
+      }
+    } catch (err: any) {
+      toast.error("Erro ao remover credenciais: " + err.message);
+    } finally {
+      setSavingAiSettings(false);
+    }
+  };
 
   const [displayName, setDisplayName] = useState(user.displayName || '');
   const [photoURL, setPhotoURL] = useState(user.photoURL || '');
@@ -231,7 +554,8 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                 {activePanel === 'perfil' && 'Perfil / Conta'}
                 {activePanel === 'aparencia' && 'Aparência'}
                 {activePanel === 'notif' && 'Notificações'}
-                {activePanel === 'ia' && 'Dados e Nuvem'}
+                {activePanel === 'dados' && 'Dados e Nuvem'}
+                {activePanel === 'ia' && 'Inteligência Artificial'}
                 {activePanel === 'pluggy' && 'Integração bancária'}
                 {activePanel === 'regras' && 'Regras de Aprendizado'}
               </span>
@@ -269,11 +593,19 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
               <ChevronRight className="md:hidden w-4 h-4 ml-auto text-slate-300" />
             </button>
             <button 
-              onClick={() => { setActivePanel('ia'); setIsMobileMenu(false); }}
-              className={`w-full text-left px-4 py-3.5 md:px-4 md:py-2.5 text-sm md:font-bold rounded-2xl md:rounded-lg transition-all flex items-center shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] md:shadow-none border border-slate-100 md:border-transparent ${activePanel === 'ia' ? 'bg-emerald-50/50 md:bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border-emerald-100/50' : 'bg-white md:bg-transparent text-slate-700 md:text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50'} active:scale-[0.98]`}>
+              onClick={() => { setActivePanel('dados'); setIsMobileMenu(false); }}
+              className={`w-full text-left px-4 py-3.5 md:px-4 md:py-2.5 text-sm md:font-bold rounded-2xl md:rounded-lg transition-all flex items-center shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] md:shadow-none border border-slate-100 md:border-transparent ${activePanel === 'dados' ? 'bg-emerald-50/50 md:bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border-emerald-100/50' : 'bg-white md:bg-transparent text-slate-700 md:text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50'} active:scale-[0.98]`}>
               <div className="md:hidden p-2 rounded-xl bg-slate-50 text-slate-500 mr-3"><Database className="w-4 h-4" /></div>
               <Database className="hidden md:block w-4 h-4 mr-2 opacity-70" /> 
               <span className="font-bold text-[14px] md:text-sm">Dados e Nuvem</span>
+              <ChevronRight className="md:hidden w-4 h-4 ml-auto text-slate-300" />
+            </button>
+            <button 
+              onClick={() => { setActivePanel('ia'); setIsMobileMenu(false); }}
+              className={`w-full text-left px-4 py-3.5 md:px-4 md:py-2.5 text-sm md:font-bold rounded-2xl md:rounded-lg transition-all flex items-center shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] md:shadow-none border border-slate-100 md:border-transparent ${activePanel === 'ia' ? 'bg-emerald-50/50 md:bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border-emerald-100/50' : 'bg-white md:bg-transparent text-slate-700 md:text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50'} active:scale-[0.98]`}>
+              <div className="md:hidden p-2 rounded-xl bg-slate-50 text-slate-500 mr-3"><Brain className="w-4 h-4" /></div>
+              <Brain className="hidden md:block w-4 h-4 mr-2 opacity-70" /> 
+              <span className="font-bold text-[14px] md:text-sm">Inteligência Artificial</span>
               <ChevronRight className="md:hidden w-4 h-4 ml-auto text-slate-300" />
             </button>
             <button 
@@ -405,7 +737,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
               </div>
             )}
             
-            {activePanel === 'ia' && (
+            {activePanel === 'dados' && (
               <div className="space-y-6 pb-6">
                 <h2 className="text-sm font-bold text-slate-800 uppercase tracking-widest border-b border-slate-100 pb-2 hidden md:block">Governança e Nuvem</h2>
                 
@@ -430,8 +762,8 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <div className="border border-slate-200 bg-white rounded-xl p-5 md:p-4 flex flex-col justify-between shadow-sm md:shadow-none">
                       <div>
                         <div className="flex items-center gap-2 mb-2.5 md:mb-2">
-                          <Download className="w-5 h-5 md:w-4 md:h-4 text-emerald-600" />
-                          <h4 className="font-bold text-[15px] md:text-sm text-slate-800">Exportar (Backup)</h4>
+                           <Download className="w-5 h-5 md:w-4 md:h-4 text-emerald-600" />
+                           <h4 className="font-bold text-[15px] md:text-sm text-slate-800">Exportar (Backup)</h4>
                         </div>
                         <p className="text-[13px] md:text-xs text-slate-500 mb-5 md:mb-4 leading-relaxed">Baixe uma cópia JSON local com o histórico de todas as suas transações desta conta.</p>
                       </div>
@@ -443,8 +775,8 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <div className="border border-slate-200 bg-white rounded-xl p-5 md:p-4 flex flex-col justify-between shadow-sm md:shadow-none">
                       <div>
                         <div className="flex items-center gap-2 mb-2.5 md:mb-2">
-                          <UploadCloud className="w-5 h-5 md:w-4 md:h-4 text-emerald-600" />
-                          <h4 className="font-bold text-[15px] md:text-sm text-slate-800">Restaurar / Importar</h4>
+                           <UploadCloud className="w-5 h-5 md:w-4 md:h-4 text-emerald-600" />
+                           <h4 className="font-bold text-[15px] md:text-sm text-slate-800">Restaurar / Importar</h4>
                         </div>
                         <p className="text-[13px] md:text-xs text-slate-500 mb-5 md:mb-4 leading-relaxed">Faça o upload de um backup JSON prévio para o banco de dados.</p>
                       </div>
@@ -481,6 +813,348 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                         )}
                       </div>
                     </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activePanel === 'ia' && (
+              <div className="space-y-6 pb-6">
+                <div className="border-b border-slate-100 dark:border-slate-700 pb-4">
+                  <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100">Inteligência Artificial</h2>
+                  <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">
+                    Conecte e gerencie serviços de modelos de IA para automatizar tarefas financeiras no FINCANVAS.
+                  </p>
+                </div>
+
+                {/* Aviso Principal */}
+                <div className="p-4 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded-xl flex gap-3 text-amber-800 dark:text-amber-300">
+                  <Brain className="w-5 h-5 shrink-0 mt-0.5" />
+                  <p className="text-xs leading-relaxed">
+                    O FINCANVAS funciona sem IA. Ao ativar IA, os dados necessários para a tarefa selecionada poderão ser enviados ao provedor configurado usando sua própria chave.
+                  </p>
+                </div>
+
+                {/* Toggle: Ativar recursos de IA */}
+                <div className="flex items-center justify-between p-5 md:p-4 bg-slate-50 dark:bg-slate-700/50 border border-slate-100 dark:border-slate-700 rounded-xl shadow-sm md:shadow-none">
+                  <div className="pr-4">
+                    <p className="text-[15px] md:text-sm font-bold text-slate-800 dark:text-slate-100">Ativar recursos de IA</p>
+                    <p className="text-[13px] md:text-xs text-slate-500 dark:text-slate-404 mt-1 leading-relaxed">
+                      Ligue ou desligue globalmente todos os recursos inteligentes integrados.
+                    </p>
+                  </div>
+                  <button 
+                    onClick={() => handleToggleAI(!aiSettings.aiEnabled)}
+                    disabled={savingAiSettings || loadingStatus}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none shadow-sm ${aiSettings.aiEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                  >
+                    <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${aiSettings.aiEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                  </button>
+                </div>
+
+                {/* Se a IA estiver desativada, mostrar o texto */}
+                {!aiSettings.aiEnabled && (
+                  <div className="p-4 bg-slate-100 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400 text-xs rounded-xl flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-slate-400 animate-pulse"></div>
+                    <span>IA desativada. O app continuará funcionando com reconhecimento local.</span>
+                  </div>
+                )}
+
+                {/* Configuração de Provedor e Chaves */}
+                <div className="bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-xl p-5 md:p-6 space-y-5">
+                  <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 pb-2 border-b border-slate-100 dark:border-slate-700 uppercase tracking-wider">
+                    Conexão de Serviço
+                  </h3>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Provedor */}
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 uppercase tracking-wider">
+                        Provedor de Serviço
+                      </label>
+                      <select 
+                        value={selectedProvider}
+                        onChange={(e) => {
+                          const p = e.target.value as AIProvider;
+                          setSelectedProvider(p);
+                          const defModel = getDefaultModel(p);
+                          setSelectedModel(defModel);
+                          
+                          // Default BaseUrl loading logic
+                          const config = PROVIDER_REGISTRY[p];
+                          setBaseUrlInput(config?.defaultBaseUrl || '');
+                          setApiKeyInput(''); // Clear on change
+                        }}
+                        className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none"
+                      >
+                        <option value="gemini">Google Gemini</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="anthropic">Anthropic</option>
+                        <option value="openrouter">OpenRouter</option>
+                        <option value="ollama">Ollama / Local</option>
+                        <option value="custom_openai_compatible">Custom OpenAI-compatible</option>
+                        <option value="opencode_api">OpenCode API</option>
+                      </select>
+                    </div>
+
+                    {/* Modelo */}
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 uppercase tracking-wider">
+                        Modelo de Linguagem (LLM)
+                      </label>
+                      <input 
+                        type="text"
+                        value={selectedModel}
+                        onChange={(e) => setSelectedModel(e.target.value)}
+                        placeholder="Nome do modelo, ex: gemini-3.5-flash"
+                        className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Campo Base URL */}
+                  {showBaseUrl && (
+                    <div className="bg-slate-50 dark:bg-slate-900/30 p-3 rounded-lg border border-slate-100 dark:border-slate-800">
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 uppercase tracking-wider">
+                        Base URL {selectedProvider === 'opencode_api' && <span className="text-rose-500">*</span>}
+                      </label>
+                      <input 
+                        type="url"
+                        value={baseUrlInput}
+                        onChange={(e) => setBaseUrlInput(e.target.value)}
+                        placeholder={
+                          selectedProvider === 'opencode_api' 
+                            ? "http://localhost:3000 ou https://seu-servidor.com" 
+                            : "https://api.provedor.com/v1"
+                        }
+                        className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none"
+                      />
+                      {selectedProvider === 'opencode_api' && (
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5">
+                          Deve apontar para um endpoint OpenCode API compatível com OpenAI. Exemplo: <strong>http://localhost:3000</strong> ou <strong>https://seu-servidor.com</strong>.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Descrição em caso de OpenCode API selecionado */}
+                  {selectedProvider === 'opencode_api' && (
+                    <div className="p-3 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-800 dark:text-emerald-300 text-xs rounded-lg border border-emerald-100 dark:border-emerald-900/40">
+                      Use OpenCode API para conectar um endpoint OpenCode, OpenCode Zen, OpenCode Go ou gateway compatível com OpenAI. A rota esperada é /v1/chat/completions.
+                    </div>
+                  )}
+
+                  {/* Campo API Key */}
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between items-center">
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+                        Chave do Provedor (API Key) {isApiKeyRequired() && <span className="text-rose-500">*</span>}
+                      </label>
+                      {isCurrentProviderSaved && (
+                        <span className="text-[11px] bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 font-bold px-2 py-0.5 rounded-full">
+                          Chave configurada
+                        </span>
+                      )}
+                    </div>
+                    
+                    <input 
+                      type="password"
+                      value={apiKeyInput}
+                      onChange={(e) => setApiKeyInput(e.target.value)}
+                      placeholder={isCurrentProviderSaved ? `Sua chave ativa está oculta (${maskedKey})` : "Insira a chave de acesso da API"}
+                      className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none font-mono"
+                    />
+                    
+                    {isCurrentProviderSaved && (
+                      <p className="text-[11px] text-slate-400 font-mono">
+                        Máscara ativa do banco: {maskedKey}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Indicador de Status detalhado */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-800 rounded-lg gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-slate-700 dark:text-slate-300">Status da Integração:</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="relative flex h-2 w-2">
+                          <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                            !aiSettings.aiEnabled 
+                              ? 'bg-slate-400' 
+                              : !isCurrentProviderSaved && selectedProvider !== 'ollama'
+                                ? 'bg-amber-400'
+                                : testStatus === 'success'
+                                  ? 'bg-emerald-400'
+                                  : testStatus === 'error'
+                                    ? 'bg-rose-400'
+                                    : 'bg-emerald-400'
+                          }`}></span>
+                          <span className={`relative inline-flex rounded-full h-2 w-2 ${
+                            !aiSettings.aiEnabled 
+                              ? 'bg-slate-500' 
+                              : !isCurrentProviderSaved && selectedProvider !== 'ollama'
+                                ? 'bg-amber-500'
+                                : testStatus === 'success'
+                                  ? 'bg-emerald-500'
+                                  : testStatus === 'error'
+                                    ? 'bg-rose-500'
+                                    : 'bg-emerald-500'
+                          }`}></span>
+                        </span>
+                        <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                          {!aiSettings.aiEnabled 
+                            ? 'IA desativada' 
+                            : !isCurrentProviderSaved && selectedProvider !== 'ollama'
+                              ? 'Chave não configurada'
+                              : testStatus === 'success'
+                                ? 'Conexão testada com sucesso'
+                                : testStatus === 'error'
+                                  ? 'Erro ao testar conexão'
+                                  : 'Chave configurada'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {testMessage && (
+                      <p className={`text-[11px] leading-snug font-mono max-w-sm break-all ${
+                        testStatus === 'success' ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                      }`}>
+                        {testMessage}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Botões de Ação para Credencial */}
+                  <div className="flex flex-wrap gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={handleSaveCredential}
+                      disabled={savingAiSettings || loadingStatus}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                    >
+                      {savingAiSettings ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          Salvando...
+                        </>
+                      ) : (
+                        'Salvar credencial'
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleTestConnection}
+                      disabled={testingConnection || loadingStatus}
+                      className="px-4 py-2 bg-white dark:bg-slate-700 hover:bg-slate-50 dark:hover:bg-slate-600 disabled:opacity-50 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600 text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                    >
+                      {testingConnection ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          Testando...
+                        </>
+                      ) : (
+                        'Testar conexão'
+                      )}
+                    </button>
+
+                    {isCurrentProviderSaved && (
+                      <button
+                        type="button"
+                        onClick={handleRemoveCredential}
+                        disabled={savingAiSettings || loadingStatus}
+                        className="px-4 py-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/20 dark:hover:bg-rose-900/20 text-rose-650 dark:text-rose-400 text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 ml-auto"
+                      >
+                        Remover credencial
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Seção de Permissões */}
+                <div className="bg-white dark:bg-slate-80 border border-slate-200 dark:border-slate-700 rounded-xl p-5 md:p-6 space-y-4">
+                  <div className="border-b border-slate-100 dark:border-slate-700 pb-2">
+                    <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wider">
+                      Permissões de Integração (Escopos)
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Configure quais tarefas automatizadas do FINCANVAS estão autorizadas a processar com IA.
+                    </p>
+                  </div>
+
+                  {/* 1. Usar IA para OCR de recibos/imagens */}
+                  <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/20 border border-slate-100 dark:border-slate-800/80 rounded-lg">
+                    <div>
+                      <p className="text-xs font-bold text-slate-800 dark:text-slate-200">Usar IA para OCR de recibos/imagens</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5 font-sans">Leitura inteligente de cupons fiscais e faturas anexadas.</p>
+                    </div>
+                    <button 
+                      onClick={() => handleTogglePermission('aiUseForOCR', !aiSettings.aiUseForOCR)}
+                      disabled={savingAiSettings || loadingStatus}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none shadow-sm ${aiSettings.aiUseForOCR ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                    >
+                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-240 ease-in-out ${aiSettings.aiUseForOCR ? 'translate-x-4' : 'translate-x-0'}`} />
+                    </button>
+                  </div>
+
+                  {/* 2. Usar IA para fallback de categorias incertas */}
+                  <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/20 border border-slate-100 dark:border-slate-800/80 rounded-lg">
+                    <div>
+                      <p className="text-xs font-bold text-slate-800 dark:text-slate-200">Usar IA para fallback de categorias incertas</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5 font-sans font-sans">Sugerir e categorizar transações não identificadas localmente.</p>
+                    </div>
+                    <button 
+                      onClick={() => handleTogglePermission('aiUseForCategoryFallback', !aiSettings.aiUseForCategoryFallback)}
+                      disabled={savingAiSettings || loadingStatus}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none shadow-sm ${aiSettings.aiUseForCategoryFallback ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                    >
+                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-240 ease-in-out ${aiSettings.aiUseForCategoryFallback ? 'translate-x-4' : 'translate-x-0'}`} />
+                    </button>
+                  </div>
+
+                  {/* 3. Usar IA para insights no dashboard */}
+                  <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/20 border border-slate-100 dark:border-slate-800/80 rounded-lg">
+                    <div>
+                      <p className="text-xs font-bold text-slate-800 dark:text-slate-200">Usar IA para insights no dashboard</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5 font-sans">Alertas e recomendações comportamentais dinâmicas na tela inicial.</p>
+                    </div>
+                    <button 
+                      onClick={() => handleTogglePermission('aiUseForInsights', !aiSettings.aiUseForInsights)}
+                      disabled={savingAiSettings || loadingStatus}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none shadow-sm ${aiSettings.aiUseForInsights ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                    >
+                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-240 ease-in-out ${aiSettings.aiUseForInsights ? 'translate-x-4' : 'translate-x-0'}`} />
+                    </button>
+                  </div>
+
+                  {/* 4. Usar IA para relatórios/mentoria financeira */}
+                  <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/20 border border-slate-100 dark:border-slate-800/80 rounded-lg">
+                    <div>
+                      <p className="text-xs font-bold text-slate-800 dark:text-slate-200">Usar IA para relatórios/mentoria financeira</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5 font-sans">Elaboração de diagnósticos complexos e mentoria financeira nas análises de histórico.</p>
+                    </div>
+                    <button 
+                      onClick={() => handleTogglePermission('aiUseForReports', !aiSettings.aiUseForReports)}
+                      disabled={savingAiSettings || loadingStatus}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none shadow-sm ${aiSettings.aiUseForReports ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                    >
+                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-240 ease-in-out ${aiSettings.aiUseForReports ? 'translate-x-4' : 'translate-x-0'}`} />
+                    </button>
+                  </div>
+
+                  {/* 5. Sempre pedir confirmação antes de enviar dados para IA */}
+                  <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/20 border border-slate-100 dark:border-slate-800/80 rounded-lg">
+                    <div>
+                      <p className="text-xs font-bold text-slate-800 dark:text-slate-200">Sempre pedir confirmação antes de enviar dados para IA</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5 font-sans">Exibir aviso de consentimento detalhado antes de cada disparo à API externa.</p>
+                    </div>
+                    <button 
+                      onClick={() => handleTogglePermission('aiAlwaysAskBeforeSending', !aiSettings.aiAlwaysAskBeforeSending)}
+                      disabled={savingAiSettings || loadingStatus}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none shadow-sm ${aiSettings.aiAlwaysAskBeforeSending ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                    >
+                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-240 ease-in-out ${aiSettings.aiAlwaysAskBeforeSending ? 'translate-x-4' : 'translate-x-0'}`} />
+                    </button>
                   </div>
                 </div>
               </div>
