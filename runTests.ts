@@ -659,13 +659,22 @@ async function runTests() {
     const envLines = envExampleContent.split("\n");
     for (const line of envLines) {
       const trimmed = line.trim();
-      if (trimmed && !trimmed.startsWith("#")) {
-        assert(trimmed.includes("="), "Qualquer linha não-vazia e que não seja comentário no .env.example deve ser uma atribuição válida (conter '=')");
+      if (trimmed) {
+        if (trimmed.includes("#")) {
+          assert(trimmed.startsWith("#"), "Comentários no .env.example devem começar com '#' em linhas próprias, não inline");
+        } else {
+          assert(trimmed.includes("="), "Qualquer linha não-vazia e que não seja comentário no .env.example deve ser uma atribuição válida (conter '=')");
+        }
       }
     }
     assert(!envExampleContent.toLowerCase().includes("mandatory") && !envExampleContent.toLowerCase().includes("obrigatória"), ".env.example não deve dizer que GEMINI_API_KEY é obrigatória");
     assert(envExampleContent.toLowerCase().includes("per-user") && envExampleContent.toLowerCase().includes("pluggy"), ".env.example deve documentar que Pluggy usa credenciais por usuário");
-    assert(envExampleContent.includes("AI_GLOBAL_FALLBACK_ENABLED=false"), ".env.example deve manter AI_GLOBAL_FALLBACK_ENABLED=false");
+    assert(envExampleContent.includes("\nAI_GLOBAL_FALLBACK_ENABLED=false") || envExampleContent.includes("\r\nAI_GLOBAL_FALLBACK_ENABLED=false"), ".env.example deve manter AI_GLOBAL_FALLBACK_ENABLED=false em linha própria");
+    assert(envExampleContent.includes("\nAPP_URL=") || envExampleContent.includes("\r\nAPP_URL="), ".env.example deve manter APP_URL= em linha própria");
+    assert(envExampleContent.includes("\nENABLE_SIMULATED_AI_FALLBACK=false") || envExampleContent.includes("\r\nENABLE_SIMULATED_AI_FALLBACK=false"), ".env.example deve manter ENABLE_SIMULATED_AI_FALLBACK=false em linha própria");
+    assert(envExampleContent.includes("\nPLUGGY_WEBHOOK_SECRET=") || envExampleContent.includes("\r\nPLUGGY_WEBHOOK_SECRET="), ".env.example deve manter PLUGGY_WEBHOOK_SECRET= em linha própria");
+    assert(!envExampleContent.includes("PLUGGY_CLIENT_ID"), ".env.example não deve conter PLUGGY_CLIENT_ID");
+    assert(!envExampleContent.includes("PLUGGY_CLIENT_SECRET"), ".env.example não deve conter PLUGGY_CLIENT_SECRET");
 
     console.log("✅ PASSED: firestore.rules aceita recognitionConfidence/recognitionMethod/needsReview válidos");
     console.log("✅ PASSED: firestore.rules rejeita recognitionConfidence fora de 0..1");
