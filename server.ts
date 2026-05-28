@@ -25,6 +25,16 @@ import { AUTO_ACCEPT, ACCEPT_WITH_BADGE, REVIEW_OR_AI } from "./src/lib/recognit
 import { RawTransactionInput as NewRawInput, UserRecognitionRule } from "./src/lib/recognition/types";
 import admin from "firebase-admin";
 import fs from "fs";
+import { 
+  isValidProvider, 
+  getProviderConfig, 
+  getDefaultModel, 
+  maskApiKey, 
+  getDefaultAISettings, 
+  isLocalBaseUrl, 
+  validateProviderConnectionConfig 
+} from "./src/lib/ai/providerRegistry";
+import { generateAIContent } from "./src/lib/ai/aiGateway";
 
 dotenv.config();
 
@@ -1625,6 +1635,308 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         error: err.message, 
         code: err.code || "PLUGGY_SYNC_FAILED" 
       });
+    }
+  });
+
+  // --- SECURE MULTI-PROVIDER AI BACKEND ENDPOINTS (FASE 2) ---
+
+  // 1. POST /api/ai/credentials/save
+  app.post("/api/ai/credentials/save", requireAuth, async (req, res) => {
+    const uid = (req as any).user.uid;
+    const { provider, apiKey, baseUrl, model } = req.body;
+
+    const validation = validateProviderConnectionConfig(
+      provider,
+      baseUrl,
+      apiKey,
+      process.env.NODE_ENV || "development"
+    );
+
+    if (!validation.isValid) {
+      return res.status(400).json({ error: validation.error || "Configuração inválida de IA." });
+    }
+
+    try {
+      const secretsRef = db.collection("users").doc(uid).collection("secrets").doc("ai");
+      const keyMasked = maskApiKey(apiKey || "");
+
+      const dataToSave = {
+        provider,
+        apiKey: apiKey || "",
+        keyMasked,
+        baseUrl: baseUrl || "",
+        model: model || getDefaultModel(provider),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      };
+
+      await secretsRef.set(dataToSave, { merge: true });
+
+      // Retornar apenas informações não-sensíveis
+      return res.json({
+        configured: true,
+        provider,
+        keyMasked,
+        model: dataToSave.model,
+        baseUrl: dataToSave.baseUrl
+      });
+    } catch (err: any) {
+      console.error("[POST /api/ai/credentials/save error]:", err.message);
+      return res.status(500).json({ error: "Erro interno ao salvar credenciais de IA." });
+    }
+  });
+
+  // 2. GET /api/ai/credentials/status
+  app.get("/api/ai/credentials/status", requireAuth, async (req, res) => {
+    const uid = (req as any).user.uid;
+    try {
+      const secretDoc = await db.collection("users").doc(uid).collection("secrets").doc("ai").get();
+      const settingsDoc = await db.collection("users").doc(uid).collection("settings").doc("ai").get();
+
+      let settings = getDefaultAISettings();
+      if (settingsDoc.exists) {
+        settings = { ...settings, ...settingsDoc.data() };
+      }
+
+      if (!secretDoc.exists) {
+        return res.json({
+          configured: false,
+          settings
+        });
+      }
+
+      const secretData = secretDoc.data()!;
+      return res.json({
+        configured: true,
+        provider: secretData.provider,
+        keyMasked: secretData.keyMasked,
+        model: secretData.model,
+        baseUrl: secretData.baseUrl,
+        settings
+      });
+    } catch (err: any) {
+      console.error("[GET /api/ai/credentials/status error]:", err.message);
+      return res.status(500).json({ error: "Erro interno ao consultar status de IA." });
+    }
+  });
+
+  // 3. DELETE /api/ai/credentials/delete
+  app.delete("/api/ai/credentials/delete", requireAuth, async (req, res) => {
+    const uid = (req as any).user.uid;
+    try {
+      await db.collection("users").doc(uid).collection("secrets").doc("ai").delete();
+
+      const settingsRef = db.collection("users").doc(uid).collection("settings").doc("ai");
+      const settingsDoc = await settingsRef.get();
+      
+      let currentSettings = getDefaultAISettings();
+      if (settingsDoc.exists) {
+        currentSettings = { ...currentSettings, ...settingsDoc.data() };
+      }
+
+      const updatedSettings = {
+        ...currentSettings,
+        aiEnabled: false,
+        aiUseForOCR: false,
+        aiUseForCategoryFallback: false,
+        aiUseForInsights: false,
+        aiUseForReports: false,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      };
+
+      await settingsRef.set(updatedSettings, { merge: true });
+
+      return res.json({
+        success: true,
+        message: "Configuração de IA removida com sucesso e IA desativada."
+      });
+    } catch (err: any) {
+      console.error("[DELETE /api/ai/credentials/delete error]:", err.message);
+      return res.status(500).json({ error: "Erro interno ao excluir credenciais." });
+    }
+  });
+
+  // 4. POST /api/ai/credentials/test
+  app.post("/api/ai/credentials/test", requireAuth, async (req, res) => {
+    const uid = (req as any).user.uid;
+    let { provider, apiKey, baseUrl, model } = req.body;
+
+    try {
+      if (!provider) {
+        const secretDoc = await db.collection("users").doc(uid).collection("secrets").doc("ai").get();
+        if (!secretDoc.exists) {
+          return res.status(400).json({ error: "Nenhuma credencial de IA configurada para teste." });
+        }
+        const secretData = secretDoc.data()!;
+        provider = secretData.provider;
+        apiKey = secretData.apiKey;
+        baseUrl = secretData.baseUrl;
+        model = secretData.model;
+      }
+
+      const validation = validateProviderConnectionConfig(
+        provider,
+        baseUrl,
+        apiKey,
+        process.env.NODE_ENV || "development"
+      );
+
+      if (!validation.isValid) {
+        return res.json({
+          success: false,
+          provider,
+          model,
+          message: validation.error || "Validação da configuração de conexão falhou."
+        });
+      }
+
+      // Safe lightweight test using generateAIContent stub or actual code
+      const response = await generateAIContent({
+        provider,
+        apiKey,
+        baseUrl,
+        model: model || getDefaultModel(provider),
+        task: "general",
+        contents: "Teste de conexão de API para FINCANVAS. Responda simulando canal operacional.",
+        config: { temperature: 0.1 }
+      });
+
+      return res.json({
+        success: true,
+        provider,
+        model: model || getDefaultModel(provider),
+        message: response.text || "Teste concluído de forma bem-sucedida."
+      });
+    } catch (err: any) {
+      console.error("[POST /api/ai/credentials/test error]:", err.message);
+      return res.json({
+        success: false,
+        provider,
+        model,
+        message: `Falha na requisição de teste: ${err.message || err}`
+      });
+    }
+  });
+
+  // 5. GET /api/ai/settings
+  app.get("/api/ai/settings", requireAuth, async (req, res) => {
+    const uid = (req as any).user.uid;
+    try {
+      const settingsDoc = await db.collection("users").doc(uid).collection("settings").doc("ai").get();
+      if (!settingsDoc.exists) {
+        return res.json(getDefaultAISettings());
+      }
+      
+      const data = settingsDoc.data() || {};
+      const defaults = getDefaultAISettings();
+      return res.json({
+        aiEnabled: data.aiEnabled ?? defaults.aiEnabled,
+        provider: data.provider ?? defaults.provider,
+        model: data.model ?? defaults.model,
+        baseUrl: data.baseUrl ?? defaults.baseUrl,
+        aiUseForOCR: data.aiUseForOCR ?? defaults.aiUseForOCR,
+        aiUseForCategoryFallback: data.aiUseForCategoryFallback ?? defaults.aiUseForCategoryFallback,
+        aiUseForInsights: data.aiUseForInsights ?? defaults.aiUseForInsights,
+        aiUseForReports: data.aiUseForReports ?? defaults.aiUseForReports,
+        aiAlwaysAskBeforeSending: data.aiAlwaysAskBeforeSending ?? defaults.aiAlwaysAskBeforeSending
+      });
+    } catch (err: any) {
+      console.error("[GET /api/ai/settings error]:", err.message);
+      return res.status(500).json({ error: "Erro interno ao buscar preferências de IA." });
+    }
+  });
+
+  // 6. POST /api/ai/settings
+  app.post("/api/ai/settings", requireAuth, async (req, res) => {
+    const uid = (req as any).user.uid;
+    const {
+      aiEnabled,
+      provider,
+      model,
+      baseUrl,
+      aiUseForOCR,
+      aiUseForCategoryFallback,
+      aiUseForInsights,
+      aiUseForReports,
+      aiAlwaysAskBeforeSending
+    } = req.body;
+
+    if (!isValidProvider(provider)) {
+      return res.status(400).json({ error: "Provedor de IA inválido." });
+    }
+
+    if (model && (typeof model !== "string" || model.length > 256)) {
+      return res.status(400).json({ error: "Modelo inválido ou muito longo." });
+    }
+
+    if (baseUrl && (typeof baseUrl !== "string" || baseUrl.length > 2048)) {
+      return res.status(400).json({ error: "Base URL inválida ou muito longa." });
+    }
+
+    const booleanFields = {
+      aiEnabled,
+      aiUseForOCR,
+      aiUseForCategoryFallback,
+      aiUseForInsights,
+      aiUseForReports,
+      aiAlwaysAskBeforeSending
+    };
+
+    for (const [key, val] of Object.entries(booleanFields)) {
+      if (val !== undefined && typeof val !== "boolean") {
+        return res.status(400).json({ error: `O campo ${key} deve ser um valor booleano.` });
+      }
+    }
+
+    try {
+      if (aiEnabled === true) {
+        const isOllamaLocal = provider === "ollama" && isLocalBaseUrl(baseUrl || "");
+        
+        if (!isOllamaLocal) {
+          const secretDoc = await db.collection("users").doc(uid).collection("secrets").doc("ai").get();
+          if (!secretDoc.exists) {
+            return res.status(400).json({ error: "Não é possível ativar a IA sem credenciais configuradas." });
+          }
+
+          const secretData = secretDoc.data()!;
+          if (provider === "opencode_api") {
+            const validation = validateProviderConnectionConfig(
+              "opencode_api",
+              baseUrl || secretData.baseUrl,
+              secretData.apiKey,
+              process.env.NODE_ENV || "development"
+            );
+            if (!validation.isValid) {
+              return res.status(400).json({ error: validation.error || "A configuração salva para o OpenCode API é inválida." });
+            }
+          }
+        }
+      }
+
+      const settingsRef = db.collection("users").doc(uid).collection("settings").doc("ai");
+      
+      const settingsToSave = {
+        aiEnabled: !!aiEnabled,
+        provider,
+        model: model || getDefaultModel(provider),
+        baseUrl: baseUrl || "",
+        aiUseForOCR: !!aiUseForOCR,
+        aiUseForCategoryFallback: !!aiUseForCategoryFallback,
+        aiUseForInsights: !!aiUseForInsights,
+        aiUseForReports: !!aiUseForReports,
+        aiAlwaysAskBeforeSending: aiAlwaysAskBeforeSending !== false,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      };
+
+      await settingsRef.set(settingsToSave, { merge: true });
+
+      return res.json({
+        success: true,
+        settings: settingsToSave
+      });
+    } catch (err: any) {
+      console.error("[POST /api/ai/settings error]:", err.message);
+      return res.status(500).json({ error: "Erro interno ao atualizar preferências de IA." });
     }
   });
 

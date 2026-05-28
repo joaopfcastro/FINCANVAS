@@ -159,6 +159,12 @@ service cloud.firestore {
         allow read, write: if false;
       }
 
+      match /settings/{settingId} {
+        allow read: if isSignedIn() && userId == request.auth.uid && isValidId(settingId);
+        allow write: if isSignedIn() && userId == request.auth.uid && isValidId(settingId) &&
+                     !incoming().keys().hasAny(['apiKey', 'secret', 'token', 'rawKey', 'clientSecret']);
+      }
+
       match /learnedRules/{ruleId} {
         allow get: if isSignedIn() && userId == request.auth.uid && isValidId(ruleId);
         allow delete: if isSignedIn() && userId == request.auth.uid && isValidId(ruleId);

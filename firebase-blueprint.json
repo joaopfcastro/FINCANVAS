@@ -83,6 +83,38 @@
         "updatedAt": { "type": "timestamp" }
       },
       "required": ["userId", "merchantKey", "category", "cleanDescription", "type", "createdAt", "updatedAt"]
+    },
+    "AIUserSettings": {
+      "title": "AIUserSettings",
+      "description": "User specific AI settings",
+      "type": "object",
+      "properties": {
+        "aiEnabled": { "type": "boolean" },
+        "provider": { "type": "string", "enum": ["gemini", "openai", "anthropic", "openrouter", "ollama", "custom_openai_compatible", "opencode_api"] },
+        "model": { "type": "string" },
+        "baseUrl": { "type": "string" },
+        "aiUseForOCR": { "type": "boolean" },
+        "aiUseForCategoryFallback": { "type": "boolean" },
+        "aiUseForInsights": { "type": "boolean" },
+        "aiUseForReports": { "type": "boolean" },
+        "aiAlwaysAskBeforeSending": { "type": "boolean" }
+      },
+      "required": ["aiEnabled", "provider", "model", "aiUseForOCR", "aiUseForCategoryFallback", "aiUseForInsights", "aiUseForReports", "aiAlwaysAskBeforeSending"]
+    },
+    "AISecrets": {
+      "title": "AISecrets",
+      "description": "Sensitive server-only AI credentials securely stored and blocked from client-side access",
+      "type": "object",
+      "properties": {
+        "provider": { "type": "string" },
+        "apiKey": { "type": "string" },
+        "keyMasked": { "type": "string" },
+        "baseUrl": { "type": "string" },
+        "model": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["provider", "keyMasked", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -97,6 +129,14 @@
     "/users/{userId}/learnedRules/{ruleId}": {
       "schema": { "$ref": "#/entities/LearnedRule" },
       "description": "User specific learned rules for matching merchants"
+    },
+    "/users/{userId}/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/AIUserSettings" },
+      "description": "Non-sensitive user configuration setting documents like 'ai'"
+    },
+    "/users/{userId}/secrets/{secretId}": {
+      "schema": { "$ref": "#/entities/AISecrets" },
+      "description": "Sensitive user secret credential documents like 'ai' and 'pluggy' blocked from client-side access"
     },
     "/accountBalances/{balanceId}": {
       "schema": { "$ref": "#/entities/AccountBalance" },
