@@ -434,7 +434,7 @@ async function startServer() {
     let clientId: string | undefined;
     let clientSecret: string | undefined;
 
-    // 1. First try: Load from users/{uid}/secrets/pluggy
+    // Buscar somente users/{uid}/secrets/pluggy
     if (uid) {
       try {
         const secretDoc = await db.collection("users").doc(uid).collection("secrets").doc("pluggy").get();
@@ -451,45 +451,13 @@ async function startServer() {
       }
     }
 
-    // 2. Second try: fallback to server global environment
-    if (!clientId) {
-      clientId = process.env.PLUGGY_CLIENT_ID;
-      clientSecret = process.env.PLUGGY_CLIENT_SECRET;
-      if (clientId) {
-        console.log("Using global Pluggy credentials");
-      }
-    }
-
-    // 3. Fallback to headers/body ONLY if development and ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS=true
-    if (!clientId && req) {
-      const isProduction = process.env.NODE_ENV === "production" || process.env.VITE_USER_NODE_ENV === "production";
-      const allowHeaderCredentials = process.env.ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS === "true";
-
-      let headerClientId = req.headers["x-pluggy-client-id"] as string;
-      let headerClientSecret = req.headers["x-pluggy-client-secret"] as string;
-
-      if (!headerClientId && req.body) {
-        headerClientId = req.body.pluggyClientId || req.body.clientId;
-        headerClientSecret = req.body.pluggyClientSecret || req.body.clientSecret;
-      }
-
-      if (headerClientId || headerClientSecret) {
-        if (isProduction || !allowHeaderCredentials) {
-          console.warn("Rejected Pluggy credentials from client headers in production");
-        } else {
-          clientId = headerClientId;
-          clientSecret = headerClientSecret;
-          console.log("[Pluggy Credentials] Loaded credentials from insecure client headers/body (development fallback).");
-        }
-      }
-    }
-
     clientId = clientId?.trim();
     clientSecret = clientSecret?.trim();
 
     if (!clientId || !clientSecret) {
-      const error = new Error("Credenciais da Pluggy ausentes no servidor. Configure as suas credenciais Client ID e Client Secret na seção de preferências para começar.");
+      const error = new Error("Configure suas credenciais Pluggy em Preferências para usar a integração bancária.");
       (error as any).code = "PLUGGY_CREDENTIALS_MISSING";
+      (error as any).status = 428;
       throw error;
     }
     return { clientId, clientSecret };
@@ -575,21 +543,14 @@ async function startServer() {
         const clientId = sData?.clientId || sData?.pluggyClientId || "";
         res.json({
           configured: true,
-          clientIdMasked: clientId.substring(0, 4) + "••••",
-          usingGlobalCredentials: false
-        });
-      } else if (process.env.PLUGGY_CLIENT_ID && process.env.PLUGGY_CLIENT_SECRET) {
-        const clientId = process.env.PLUGGY_CLIENT_ID;
-        res.json({
-          configured: true,
-          clientIdMasked: clientId.substring(0, 4) + "••••",
-          usingGlobalCredentials: true
+          needsCredentials: false,
+          clientIdMasked: clientId.substring(0, 4) + "••••"
         });
       } else {
         res.json({
           configured: false,
-          clientIdMasked: null,
-          usingGlobalCredentials: false
+          needsCredentials: true,
+          clientIdMasked: null
         });
       }
     } catch (err: any) {
@@ -627,7 +588,7 @@ async function startServer() {
       res.json({ success: true, message: "Par de chaves do Pluggy validado com sucesso!" });
     } catch (err: any) {
       console.error("[Pluggy Test HTTP Router Error]:", err.message);
-      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 401).json({ error: err.message || "Erro de login na Pluggy." });
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 428 : 401).json({ error: err.message || "Erro de login na Pluggy." });
     }
   });
 
@@ -723,7 +684,7 @@ async function startServer() {
       res.json({ success: true, ok: true, items, globalListingRestricted, requiresManualItemId });
     } catch (err: any) {
       console.error("[Pluggy list_items HTTP Router Error]:", err.message);
-      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ error: err.message });
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 428 : 500).json({ error: err.message });
     }
   });
 
@@ -758,7 +719,7 @@ async function startServer() {
       res.json({ success: true, message: "Conexão deletada com sucesso!" });
     } catch (err: any) {
       console.error("[Pluggy delete_item HTTP Router Error]:", err.message);
-      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ error: err.message });
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 428 : 500).json({ error: err.message });
     }
   });
 
@@ -809,7 +770,7 @@ async function startServer() {
         code = "PLUGGY_ITEM_ACCESS_RESTRICTED";
         message = "Esse Item ID não pertence às credenciais Pluggy configuradas ou seu plano não permite esse acesso.";
       } else if (error.code === "PLUGGY_CREDENTIALS_MISSING") {
-        status = 400;
+        status = 428;
         code = error.code;
       }
 
@@ -835,7 +796,7 @@ async function startServer() {
       res.json({ success: true, connectToken: data.accessToken || data.token || data.connectToken });
     } catch (err: any) {
       console.error("[Pluggy connect_token HTTP Router Error]:", err.message);
-      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ error: err.message });
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 428 : 500).json({ error: err.message });
     }
   });
 
@@ -996,7 +957,7 @@ async function startServer() {
       res.json({ success: true, item: itemData });
     } catch (err: any) {
       console.error("[Pluggy create_sandbox HTTP Router Error]:", err.message);
-      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ error: err.message });
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 428 : 500).json({ error: err.message });
     }
   });
 
@@ -1026,7 +987,7 @@ async function startServer() {
       res.json({ success: true, webhook });
     } catch (err: any) {
       console.error("[Pluggy create_webhook HTTP Router Error]:", err.message);
-      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ error: err.message });
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 428 : 500).json({ error: err.message });
     }
   });
 
@@ -1039,7 +1000,7 @@ async function startServer() {
       res.json({ success: true, webhooks });
     } catch (err: any) {
       console.error("[Pluggy list_webhooks HTTP Router Error]:", err.message);
-      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ error: err.message });
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 428 : 500).json({ error: err.message });
     }
   });
 
@@ -1056,7 +1017,7 @@ async function startServer() {
       res.json({ success: true, message: "Webhook excluído com sucesso do Pluggy!" });
     } catch (err: any) {
       console.error("[Pluggy delete_webhook HTTP Router Error]:", err.message);
-      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ error: err.message });
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 428 : 500).json({ error: err.message });
     }
   });
 
@@ -1654,7 +1615,7 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       });
     } catch (err: any) {
       console.error("[Pluggy sync HTTP Router Error]:", err.message);
-      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 400 : 500).json({ 
+      res.status(err.code === "PLUGGY_CREDENTIALS_MISSING" ? 428 : 500).json({ 
         ok: false,
         success: false, 
         error: err.message, 

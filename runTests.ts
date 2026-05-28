@@ -1190,10 +1190,26 @@ async function runTests() {
       assert(!hasLocalStorageSet, `Arquivo ${f} não pode persistir segredos da Pluggy no localStorage`);
     }
 
+    // 4. Garantir que server.ts não contém fallback global nem log global de credenciais Pluggy
+    const serverText = fs.readFileSync('./server.ts', 'utf8');
+    assert(!serverText.includes("Using global Pluggy credentials"), "server.ts não deve conter o log 'Using global Pluggy credentials'");
+    assert(!serverText.includes("clientId = process.env.PLUGGY_CLIENT_ID;"), "server.ts não deve conter fallback para PLUGGY_CLIENT_ID no fluxo de execução de API");
+    assert(!serverText.includes("clientSecret = process.env.PLUGGY_CLIENT_SECRET;"), "server.ts não deve conter fallback para PLUGGY_CLIENT_SECRET no fluxo de execução de API");
+
+    // 5. Garantir que getPluggyCredentialsOrThrow lança erro com status 428 e código correto
+    assert(serverText.includes('code = "PLUGGY_CREDENTIALS_MISSING"'), "getPluggyCredentialsOrThrow deve definir código PLUGGY_CREDENTIALS_MISSING");
+    assert(serverText.includes('status = 428'), "getPluggyCredentialsOrThrow ou erros dependentes de credencial devem retornar ou definir status 428");
+
+    // 6. O endpoint /api/pluggy/credentials/status não deve retornar usingGlobalCredentials
+    assert(!serverText.includes("usingGlobalCredentials:"), "server.ts não deve incluir mais usingGlobalCredentials nos retornos da API de status de credenciais");
+
     passed++;
     console.log("✅ PASSED: Variável aiFallbackAppliedCount renomeada com sucesso para aiOcrExtractedCount");
     console.log("✅ PASSED: Nenhum componente chama o endpoint legado /api/gemini diretamente");
     console.log("✅ PASSED: Nenhuma chave sensível ou segredo da Pluggy é persistido no localStorage");
+    console.log("✅ PASSED: Nenhum fallback global nem log global de chaves Pluggy");
+    console.log("✅ PASSED: Erro de credenciais lançados com status 428 controlado");
+    console.log("✅ PASSED: O endpoint status de credenciais não retorna usingGlobalCredentials");
   } catch (err: any) {
     console.error("Erro no teste 30:", err);
     failed++;

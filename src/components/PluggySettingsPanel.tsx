@@ -1571,14 +1571,14 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
                 </div>
                 <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-1.5 pt-1">
                   <span className="text-slate-400">Chaves do Usuário:</span>
-                  <span className={`font-bold ${isPluggyConfigured && !usingGlobalCredentials ? 'text-emerald-600' : 'text-amber-500'}`}>
-                    {isPluggyConfigured && !usingGlobalCredentials ? (clientIdMasked || 'Cadastradas') : 'Não cadastradas'}
+                  <span className={`font-bold ${isPluggyConfigured ? 'text-emerald-600' : 'text-amber-500'}`}>
+                    {isPluggyConfigured ? (clientIdMasked || 'Cadastradas') : 'Não cadastradas'}
                   </span>
                 </div>
                 <div className="flex items-center justify-between pt-1">
                   <span className="text-slate-400">Origem das Chaves:</span>
                   <span className="text-[10px] bg-slate-150 dark:bg-slate-800 px-1.5 py-0.5 rounded font-bold text-slate-600 dark:text-slate-300">
-                    {isPluggyConfigured ? (usingGlobalCredentials ? 'Modo Global (Plataforma)' : 'Modo Seguro (Nuvem Firestore)') : 'Nenhum'}
+                    {isPluggyConfigured ? 'Modo Seguro (Nuvem Firestore)' : 'Nenhum'}
                   </span>
                 </div>
               </div>
@@ -1648,7 +1648,7 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
                   <span>Salvar chaves cadastrais</span>
                 </button>
 
-                {isPluggyConfigured && !usingGlobalCredentials && (
+                {isPluggyConfigured && (
                   <button
                     type="button"
                     onClick={handleRemoveCustomKeys}
