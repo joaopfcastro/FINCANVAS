@@ -36,6 +36,7 @@ import { collection, addDoc, serverTimestamp, deleteDoc, doc, updateDoc } from '
 import { auth, db } from '../firebase';
 import { toast } from 'sonner';
 import { AIConfirmationModal } from './AIConfirmationModal';
+import { usePluggySync } from '../hooks/usePluggySync';
 
 import { FilterConfig } from '../App';
 import { PeriodFilterToolbar } from './PeriodFilterToolbar';
@@ -52,6 +53,9 @@ interface DashboardViewProps {
   onOpenManualEntry: () => void;
   onEditTransaction: (transaction: Transaction) => void;
   accountBalances: AccountBalance[];
+  user: any;
+  profile: any;
+  learnedRules?: any[];
 }
 
 
@@ -65,12 +69,22 @@ export const DashboardView = React.memo(function DashboardView({
   onNavigateImport, 
   onOpenManualEntry, 
   onEditTransaction,
-  accountBalances
+  accountBalances,
+  user,
+  profile,
+  learnedRules = []
 }: DashboardViewProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
   const [currentPage, setCurrentPage] = useState(1);
   const rowsPerPage = 10;
+  
+  const { syncPluggyNow, isSyncingPluggy, pluggySyncStep } = usePluggySync(
+    user,
+    profile,
+    transactions,
+    learnedRules
+  );
   
   const [filterDate, setFilterDate] = useState('');
   const [filterDesc, setFilterDesc] = useState('');
@@ -281,8 +295,7 @@ export const DashboardView = React.memo(function DashboardView({
   const deleteStartYRef = useRef(0);
 
   const handleRefresh = async () => {
-    // Simulate network delay for pull to refresh
-    await new Promise(resolve => setTimeout(resolve, 800));
+    await syncPluggyNow();
   };
 
   const handleDeleteTouchStart = (e: React.TouchEvent) => {
@@ -781,6 +794,13 @@ export const DashboardView = React.memo(function DashboardView({
       <header className="min-h-0 md:min-h-[4rem] py-2 md:py-3 flex-shrink-0 bg-white border-b border-slate-200 flex flex-row items-center justify-between px-3 md:px-8 z-10 gap-2 md:gap-4 shadow-sm w-full">
         <div className="flex flex-row items-center gap-2 sm:gap-4 flex-1 min-w-0 pr-2">
           <h1 className="text-lg font-extrabold text-slate-800 tracking-tight hidden lg:block whitespace-nowrap flex-shrink-0">Dashboard</h1>
+          {isSyncingPluggy && (
+            <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-50 border border-emerald-100 rounded-full animate-pulse text-emerald-800 text-xs font-semibold shrink-0">
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+              <span className="hidden md:inline">{pluggySyncStep || 'Sincronizando...'}</span>
+              <span className="md:hidden">Sincronizando...</span>
+            </div>
+          )}
           <div className="flex-1 min-w-0">
             <PeriodFilterToolbar filterConfig={filterConfig} setFilterConfig={setFilterConfig} />
           </div>

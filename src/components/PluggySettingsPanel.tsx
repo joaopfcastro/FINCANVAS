@@ -3,6 +3,7 @@ import { doc, updateDoc, serverTimestamp, setDoc, collection, query, where, getD
 import { db } from '../firebase';
 import { UserProfile, Transaction } from '../App';
 import { User } from 'firebase/auth';
+import { usePluggySync } from '../hooks/usePluggySync';
 import { 
   classifyPluggyDirection, 
   normalizeInstitutionName, 
@@ -181,8 +182,12 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
   const [showManualForm, setShowManualForm] = useState(false);
   const [isLoadingConnect, setIsLoadingConnect] = useState(false);
   const [isTestingPluggy, setIsTestingPluggy] = useState(false);
-  const [isSyncingPluggy, setIsSyncingPluggy] = useState(false);
-  const [pluggySyncStep, setPluggySyncStep] = useState('');
+  const { syncPluggyNow, isSyncingPluggy, pluggySyncStep } = usePluggySync(
+    user,
+    profile,
+    transactions,
+    learnedRules
+  );
   const [pluggyItems, setPluggyItems] = useState<any[]>([]);
   const [isLoadingItems, setIsLoadingItems] = useState(false);
   
@@ -642,188 +647,8 @@ export function PluggySettingsPanel({ user, profile, transactions, learnedRules 
       toast.error('A integração da Pluggy não está configurada.');
       return;
     }
-    setIsSyncingPluggy(true);
-    setPluggySyncStep('Conectando de forma segura ao gateway da Pluggy...');
-    try {
-      const res = await fetch('/api/pluggy/sync', {
-        method: 'POST',
-        headers: await getPluggyHeaders(),
-        body: JSON.stringify({
-          categories: profile.categories || [],
-          itemIds: localItemIds,
-          learnedRules
-        })
-      });
-
-      const data = await safeJsonClient(res);
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || 'Problema de resposta no servidor de sincronização.');
-      }
-
-      // Upsert retrieved account balances
-      const incomingAccounts = data.accounts || [];
-      if (incomingAccounts.length > 0) {
-        const balancesCol = collection(db, 'accountBalances');
-        const qBalances = query(balancesCol, where('userId', '==', user.uid));
-        const currentBalancesSnap = await getDocs(qBalances);
-        
-        const existingDocsMap = new Map<string, { id: string, includeInSaldoTotal: boolean, includeReason: string }>();
-        currentBalancesSnap.docs.forEach(docSnap => {
-          const bData = docSnap.data();
-          if (bData.accountId) {
-            existingDocsMap.set(bData.accountId, {
-              id: docSnap.id,
-              includeInSaldoTotal: bData.includeInSaldoTotal !== undefined ? bData.includeInSaldoTotal : true,
-              includeReason: bData.includeReason || ''
-            });
-          }
-        });
-
-        for (const acc of incomingAccounts) {
-          const existing = existingDocsMap.get(acc.accountId);
-          let include = true;
-          let reason = 'Saldo disponível';
-
-          if (existing) {
-            include = existing.includeInSaldoTotal;
-            reason = existing.includeReason;
-          } else {
-            const decision = shouldIncludeInSaldoTotal(acc.accountType, acc.accountSubtype);
-            include = decision.include;
-            reason = decision.reason;
-          }
-
-          const docPayload = {
-            userId: user.uid,
-            provider: 'pluggy',
-            itemId: acc.itemId || null,
-            accountId: acc.accountId,
-            bankName: acc.bankName,
-            bankRawName: acc.bankRawName || null,
-            accountName: acc.accountName,
-            accountRawName: acc.accountRawName || null,
-            accountLabel: acc.accountLabel,
-            accountType: acc.accountType,
-            accountSubtype: acc.accountSubtype || null,
-            number: acc.number || null,
-            balance: typeof acc.balance === 'number' ? acc.balance : 0,
-            currencyCode: acc.currencyCode || 'BRL',
-            includeInSaldoTotal: include,
-            includeReason: reason,
-            status: acc.status || 'ACTIVE',
-            sourceRaw: acc.sourceRaw || null,
-            lastSyncedAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          };
-
-          if (existing) {
-            const docRef = doc(db, 'accountBalances', existing.id);
-            await setDoc(docRef, docPayload, { merge: true });
-          } else {
-            const docRef = doc(balancesCol);
-            await setDoc(docRef, {
-              ...docPayload,
-              createdAt: serverTimestamp()
-            });
-          }
-        }
-      }
-
-      const list: any[] = data.transactions || [];
-      if (data.message) {
-        toast.info(data.message);
-      }
-
-      if (list.length === 0) {
-        setPluggySyncStep('Tudo atualizado! Nenhuma nova transação nos últimos 30 dias.');
-        toast.success('Sincronização concluída! Suas contas estão em dia.');
-        return;
-      }
-
-      setPluggySyncStep(`Encontrados ${list.length} lançamentos recentes. Analisando duplicidades...`);
-
-      const existingCounts: Record<string, number> = {};
-      const existingPluggyIds = new Set<string>();
-
-      for (const t of transactions) {
-        if (t.pluggyId) {
-          existingPluggyIds.add(t.pluggyId);
-        }
-        const key = makeKey(t.date, t.desc, t.amount, t.source, t.type);
-        existingCounts[key] = (existingCounts[key] || 0) + 1;
-      }
-
-      const filterToInsert: any[] = [];
-      let skippedCount = 0;
-
-      for (const candidate of list) {
-        if (candidate.pluggyId && existingPluggyIds.has(candidate.pluggyId)) {
-          skippedCount++;
-          continue;
-        }
-        const key = makeKey(candidate.date, candidate.desc, candidate.amount, candidate.source, candidate.type);
-        if (existingCounts[key] && existingCounts[key] > 0) {
-          existingCounts[key]--;
-          skippedCount++;
-        } else {
-          filterToInsert.push(candidate);
-        }
-      }
-
-      if (filterToInsert.length === 0) {
-        setPluggySyncStep(`Concluído: ${skippedCount} entradas descartadas pois já estavam gravadas.`);
-        toast.success(`Contas atualizadas! Todas as novas transações já constavam no sistema.`);
-        return;
-      }
-
-      setPluggySyncStep(`Reconhecendo transações com motor local. Gravando ${filterToInsert.length} transações...`);
-
-      const transactionsCollectionRef = doc(db, 'transactions', 'dummy').parent;
-
-      for (const itemToSave of filterToInsert) {
-        const docRef = doc(transactionsCollectionRef);
-        await setDoc(docRef, {
-          date: itemToSave.date,
-          desc: itemToSave.desc,
-          cat: itemToSave.cat,
-          type: itemToSave.type,
-          amount: itemToSave.amount,
-          source: itemToSave.source,
-          pluggyId: itemToSave.pluggyId,
-          userId: user.uid,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-          // Persist the full normalized metadata:
-          rawAmount: itemToSave.rawAmount !== undefined ? itemToSave.rawAmount : null,
-          sourceRaw: itemToSave.sourceRaw || null,
-          bankRawName: itemToSave.bankRawName || null,
-          accountRawName: itemToSave.accountRawName || null,
-          accountLabel: itemToSave.accountLabel || null,
-          accountId: itemToSave.accountId || null,
-          itemId: itemToSave.itemId || null,
-          pluggyType: itemToSave.pluggyType || null,
-          accountType: itemToSave.accountType || null,
-          accountSubtype: itemToSave.accountSubtype || null,
-          operationType: itemToSave.operationType || null,
-          paymentData: itemToSave.paymentData || null,
-          merchant: itemToSave.merchant || null,
-          detectedDirection: itemToSave.detectedDirection || itemToSave.type,
-          directionConfidence: itemToSave.directionConfidence !== undefined ? itemToSave.directionConfidence : null,
-          directionReason: itemToSave.directionReason || null,
-          isLikelyInternalTransfer: itemToSave.isLikelyInternalTransfer !== undefined ? itemToSave.isLikelyInternalTransfer : false,
-          shouldIgnoreInTotals: itemToSave.shouldIgnoreInTotals !== undefined ? itemToSave.shouldIgnoreInTotals : false,
-        } as any);
-      }
-
-      setPluggySyncStep(`Concluído! ${filterToInsert.length} transações adicionadas e reconhecidas localmente.`);
-      toast.success(`${filterToInsert.length} transações importadas com sucesso!`);
-    } catch (err: any) {
-      console.error(err);
-      toast.error(err.message || 'Falha na sincronização.');
-      setPluggySyncStep('Ocorreu um erro inesperado.');
-    } finally {
-      setIsSyncingPluggy(false);
-    }
+    // settings tab manually forces sync, bypassing throttle cooldown
+    await syncPluggyNow({ force: true });
   };
 
   // --- HISTORICAL AUDIT AND HIGH-TOUCH SANITIZER ENGINE ---

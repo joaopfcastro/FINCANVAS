@@ -771,6 +771,9 @@ export default function App() {
             onOpenManualEntry={handleOpenManualEntry} 
             onEditTransaction={handleEditTransaction}
             accountBalances={accountBalances}
+            user={user}
+            profile={profile}
+            learnedRules={learnedRules}
           />
         )}
         {activeView === 'import' && <ImportView userId={user.uid} onNavigateDashboard={handleNavigateDashboard} profile={profile} />}
