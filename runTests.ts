@@ -656,7 +656,56 @@ async function runTests() {
     assert(!envExampleContent.includes("ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS"), ".env.example não deve conter ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS");
 
     // 7. Validações estritas de .env.example
-    const envLines = envExampleContent.split("\n");
+    const envLines = envExampleContent.split(/\r?\n/);
+    assert(envLines.length > 10, ".env.example tem mais de 10 linhas");
+
+    // APP_URL está em linha própria
+    const hasAppUrlOnOwnLine = envLines.some(line => {
+      const trimmed = line.trim();
+      return (trimmed.startsWith("APP_URL=") || trimmed.startsWith("APP_URL =")) && !trimmed.startsWith("#");
+    });
+    assert(hasAppUrlOnOwnLine, "APP_URL está em linha própria");
+
+    // GEMINI_API_KEY está em linha própria
+    const hasGeminiKeyOnOwnLine = envLines.some(line => {
+      const trimmed = line.trim();
+      return (trimmed.startsWith("GEMINI_API_KEY=") || trimmed.startsWith("GEMINI_API_KEY =")) && !trimmed.startsWith("#");
+    });
+    assert(hasGeminiKeyOnOwnLine, "GEMINI_API_KEY está em linha própria");
+
+    // AI_GLOBAL_FALLBACK_ENABLED=false está em linha própria
+    const hasAiGlobalFallbackOnOwnLine = envLines.some(line => {
+      const trimmed = line.trim();
+      return (trimmed === "AI_GLOBAL_FALLBACK_ENABLED=false") && !trimmed.startsWith("#");
+    });
+    assert(hasAiGlobalFallbackOnOwnLine, "AI_GLOBAL_FALLBACK_ENABLED=false está em linha própria");
+
+    // ENABLE_SIMULATED_AI_FALLBACK=false está em linha própria
+    const hasSimulatedAiFallbackOnOwnLine = envLines.some(line => {
+      const trimmed = line.trim();
+      return (trimmed === "ENABLE_SIMULATED_AI_FALLBACK=false") && !trimmed.startsWith("#");
+    });
+    assert(hasSimulatedAiFallbackOnOwnLine, "ENABLE_SIMULATED_AI_FALLBACK=false está em linha própria");
+
+    // PLUGGY_WEBHOOK_SECRET= está em linha própria
+    const hasPluggyWebhookSecretOnOwnLine = envLines.some(line => {
+      const trimmed = line.trim();
+      return (trimmed === "PLUGGY_WEBHOOK_SECRET=") && !trimmed.startsWith("#");
+    });
+    assert(hasPluggyWebhookSecretOnOwnLine, "PLUGGY_WEBHOOK_SECRET= está em linha própria");
+
+    // nenhuma variável aparece depois de # na mesma linha
+    let noVariableAfterHash = true;
+    for (const line of envLines) {
+      if (line.includes("#")) {
+        const afterHash = line.substring(line.indexOf("#") + 1).trim();
+        if (/^(?:APP_URL|GEMINI_API_KEY|AI_GLOBAL_FALLBACK_ENABLED|ENABLE_SIMULATED_AI_FALLBACK|PLUGGY_WEBHOOK_SECRET|ENABLE_INSECURE_PLUGGY_HEADER_CREDENTIALS|PLUGGY_CLIENT_ID|PLUGGY_CLIENT_SECRET)\s*=/.test(afterHash)) {
+          noVariableAfterHash = false;
+        }
+      }
+    }
+    assert(noVariableAfterHash, "nenhuma variável aparece depois de # na mesma linha");
+
     for (const line of envLines) {
       const trimmed = line.trim();
       if (trimmed) {
@@ -669,10 +718,6 @@ async function runTests() {
     }
     assert(!envExampleContent.toLowerCase().includes("mandatory") && !envExampleContent.toLowerCase().includes("obrigatória"), ".env.example não deve dizer que GEMINI_API_KEY é obrigatória");
     assert(envExampleContent.toLowerCase().includes("per-user") && envExampleContent.toLowerCase().includes("pluggy"), ".env.example deve documentar que Pluggy usa credenciais por usuário");
-    assert(envExampleContent.includes("\nAI_GLOBAL_FALLBACK_ENABLED=false") || envExampleContent.includes("\r\nAI_GLOBAL_FALLBACK_ENABLED=false"), ".env.example deve manter AI_GLOBAL_FALLBACK_ENABLED=false em linha própria");
-    assert(envExampleContent.includes("\nAPP_URL=") || envExampleContent.includes("\r\nAPP_URL="), ".env.example deve manter APP_URL= em linha própria");
-    assert(envExampleContent.includes("\nENABLE_SIMULATED_AI_FALLBACK=false") || envExampleContent.includes("\r\nENABLE_SIMULATED_AI_FALLBACK=false"), ".env.example deve manter ENABLE_SIMULATED_AI_FALLBACK=false em linha própria");
-    assert(envExampleContent.includes("\nPLUGGY_WEBHOOK_SECRET=") || envExampleContent.includes("\r\nPLUGGY_WEBHOOK_SECRET="), ".env.example deve manter PLUGGY_WEBHOOK_SECRET= em linha própria");
     assert(!envExampleContent.includes("PLUGGY_CLIENT_ID"), ".env.example não deve conter PLUGGY_CLIENT_ID");
     assert(!envExampleContent.includes("PLUGGY_CLIENT_SECRET"), ".env.example não deve conter PLUGGY_CLIENT_SECRET");
 
