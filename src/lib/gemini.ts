@@ -45,3 +45,35 @@ export const secureGenerateContent = async (params: GenerateContentParams) => {
 
   return response.json();
 };
+
+export interface AIUserSettings {
+  aiEnabled: boolean;
+  provider: string;
+  model: string;
+  baseUrl: string;
+  aiUseForOCR: boolean;
+  aiUseForCategoryFallback: boolean;
+  aiUseForInsights: boolean;
+  aiUseForReports: boolean;
+  aiAlwaysAskBeforeSending: boolean;
+}
+
+export const fetchAISettings = async (): Promise<AIUserSettings | null> => {
+  const user = auth.currentUser;
+  if (!user) return null;
+  try {
+    const token = await user.getIdToken();
+    const res = await fetch('/api/ai/credentials/status', {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return data.settings;
+    }
+  } catch (err) {
+    console.error('Error fetching AI settings:', err);
+  }
+  return null;
+};

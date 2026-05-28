@@ -1414,7 +1414,26 @@ async function startServer() {
 
       let geminiMapped: Record<string, { cat: string; desc: string }> = {};
 
-      if (lowConfidenceList.length > 0) {
+      let aiEnabled = false;
+      let aiUseForCategoryFallback = false;
+      try {
+        const settingsDoc = await db.collection("users").doc(uid).collection("settings").doc("ai").get();
+        if (settingsDoc.exists) {
+          const sData = settingsDoc.data() || {};
+          aiEnabled = sData.aiEnabled ?? false;
+          aiUseForCategoryFallback = sData.aiUseForCategoryFallback ?? false;
+        } else {
+          const defaults = getDefaultAISettings();
+          aiEnabled = defaults.aiEnabled;
+          aiUseForCategoryFallback = defaults.aiUseForCategoryFallback;
+        }
+      } catch (err: any) {
+        console.warn("[Pluggy Sync AI check] Failed to fetch settings, assuming false:", err.message);
+      }
+
+      const aiAllowed = aiEnabled && aiUseForCategoryFallback;
+
+      if (lowConfidenceList.length > 0 && aiAllowed) {
         console.log(`[Pluggy Sync AI Fallback] Sending ${lowConfidenceList.length} transactions to AI fallback process...`);
         const promptSystem = `Você é um excelente assistente financeiro de elite brasileiro. Algumas transações com baixa confiança local precisam de classificação e pós-processamento. Mapeie-as para estas categorias válidas: ${JSON.stringify(userCategories)}.
 Você NÃO PODE alterar o tipo da transação ou direção financeira. A direção financeira já foi calculada heuristicamente e está correta em 'detectedDirection' ('Receita' ou 'Despesa').
@@ -1563,7 +1582,8 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
           } else if (localRec.confidence >= ACCEPT_WITH_BADGE) {
             localProbableCount++;
           }
-          isCurrentlyReviewed = localRec.needsReview || localRec.method === 'REVIEW_REQUIRED' || finalConfidence < ACCEPT_WITH_BADGE;
+          const isLowConfidence = localRec.confidence < REVIEW_OR_AI;
+          isCurrentlyReviewed = localRec.needsReview || localRec.method === 'REVIEW_REQUIRED' || finalConfidence < ACCEPT_WITH_BADGE || isLowConfidence;
         }
 
         if (isCurrentlyReviewed) {

@@ -28,11 +28,12 @@ import {
   ToggleLeft,
   ToggleRight
 } from 'lucide-react';
-import { secureGenerateContent } from '../lib/gemini';
+import { secureGenerateContent, fetchAISettings } from '../lib/gemini';
 import html2pdf from 'html2pdf.js';
 import { deleteDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { toast } from 'sonner';
+import { AIConfirmationModal } from './AIConfirmationModal';
 
 import { 
   PieChart, 
@@ -87,6 +88,38 @@ export const ReportsView = React.memo(function ReportsView({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [loadingMessage, setLoadingMessage] = useState('Sincronizando modelos financeiros...');
+
+  const [aiSettings, setAiSettings] = useState<{ aiEnabled: boolean; aiUseForReports: boolean } | null>(null);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [hasPendingGenerate, setHasPendingGenerate] = useState(false);
+
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const settings = await fetchAISettings();
+        if (settings) {
+          setAiSettings({
+            aiEnabled: settings.aiEnabled,
+            aiUseForReports: settings.aiUseForReports
+          });
+        }
+      } catch (e) {
+        console.error("Failed to load AI settings in ReportsView:", e);
+      }
+    };
+    loadSettings();
+  }, [transactions]);
+
+  const handleConfirmAI = async (dontAskAgain: boolean) => {
+    setShowConfirmModal(false);
+    if (dontAskAgain) {
+      sessionStorage.setItem('ai_bypass_confirm', 'true');
+    }
+    if (hasPendingGenerate) {
+      setHasPendingGenerate(false);
+      await runGenerate();
+    }
+  };
   
   // Modal for Details
   const [modalDetail, setModalDetail] = useState<{ type: 'category' | 'income' | 'expense' | 'balance' | 'savings', title: string, value?: string } | null>(null);
@@ -324,8 +357,7 @@ export const ReportsView = React.memo(function ReportsView({
     setReportHtml(null); // Reset if fingerprint doesn't match or doesn't exist
   }, [currentMonthTransactions, filterConfig]);
 
-  const handleGenerate = async () => {
-    if (currentMonthTransactions.length === 0) return;
+  const runGenerate = async () => {
     setLoading(true);
     setError('');
     setActiveTab('ai'); // Ensure tab is active so we see loader
@@ -414,6 +446,29 @@ export const ReportsView = React.memo(function ReportsView({
       setError(e.message || 'Erro na geração do relatório.');
       setLoading(false);
     }
+  };
+
+  const handleGenerate = async () => {
+    if (currentMonthTransactions.length === 0) return;
+    
+    const settings = await fetchAISettings();
+    if (!settings || !settings.aiEnabled || !settings.aiUseForReports) {
+      const warningText = "Geração de relatórios por IA desativada. Ative em Preferências > Inteligência Artificial.";
+      toast.error(warningText);
+      setError(warningText);
+      return;
+    }
+
+    const bypass = sessionStorage.getItem('ai_bypass_confirm') === 'true';
+    const needsConfirm = (settings.aiAlwaysAskBeforeSending ?? true) && !bypass;
+
+    if (needsConfirm) {
+      setHasPendingGenerate(true);
+      setShowConfirmModal(true);
+      return;
+    }
+
+    await runGenerate();
   };
 
   const [isPrinting, setIsPrinting] = useState(false);
@@ -985,71 +1040,85 @@ export const ReportsView = React.memo(function ReportsView({
           ) : (
             <>
               {/* Mentoria AI Tab Content */}
-              {!reportHtml && !loading && (
-                <div className="flex-1 flex flex-col justify-center items-center py-2 sm:py-16 text-center">
-                  <div className="w-16 h-16 sm:w-24 sm:h-24 bg-indigo-50/50 text-indigo-600 rounded-3xl flex items-center justify-center mx-auto mb-3 sm:mb-6 shadow-sm shrink-0 sm:mt-0">
-                    <BrainCircuit className="w-10 h-10 sm:w-14 sm:h-14" />
+              {aiSettings && (!aiSettings.aiEnabled || !aiSettings.aiUseForReports) ? (
+                <div className="flex-1 flex flex-col justify-center items-center py-12 sm:py-24 text-center">
+                  <div className="w-16 h-16 bg-slate-100 border border-slate-200 text-slate-400 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                    <BrainCircuit className="w-8 h-8" />
                   </div>
-                  <h3 className="text-xl sm:text-2xl font-black text-slate-800 tracking-tight shrink-0 px-2">O Olhar Clínico da Inteligência Artificial</h3>
-                  <p className="text-[13px] sm:text-base text-slate-500 mt-2 sm:mt-4 max-w-sm mx-auto leading-relaxed px-4 shrink-0">
-                    Nossa IA analisará cada transação, cruzar categorias e identificar padrões que você talvez não esteja percebendo. É como ter um assessor financeiro focado em você.
+                  <h3 className="text-lg font-bold text-slate-700">Relatórios por IA Desativados</h3>
+                  <p className="text-sm text-slate-400 mt-2 max-w-sm mx-auto">
+                    Geração de relatórios por IA desativada. Ative em Preferências &gt; Inteligência Artificial.
                   </p>
-                  <div className="mt-8 sm:mt-8 w-full px-2 sm:px-0 shrink-0 mb-4 sm:mb-0">
-                    <button onClick={handleGenerate} disabled={transactions.length === 0} className="px-6 py-4 w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-lg shadow-indigo-600/20 transition-all flex items-center justify-center mx-auto disabled:opacity-50 text-sm active:scale-95 group">
-                      <Sparkles className="w-4 h-4 mr-2 group-hover:rotate-12 transition-transform" /> Começar Análise Profunda
-                    </button>
-                  </div>
                 </div>
-              )}
-
-              {loading && (
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-24 flex flex-col items-center justify-center text-indigo-600 overflow-hidden relative">
-                  <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-indigo-50/30 via-transparent to-transparent opacity-50 scale-150 animate-pulse" />
-                  <Loader2 className="w-12 h-12 animate-spin mb-6 relative z-10" />
-                  <p className="font-bold text-sm tracking-widest text-slate-500 uppercase relative z-10">{loadingMessage}</p>
-                  <div className="mt-4 flex gap-1 relative z-10">
-                    <span className="w-1.5 h-1.5 bg-indigo-600 rounded-full animate-bounce [animation-delay:-0.3s]" />
-                    <span className="w-1.5 h-1.5 bg-indigo-600 rounded-full animate-bounce [animation-delay:-0.15s]" />
-                    <span className="w-1.5 h-1.5 bg-indigo-600 rounded-full animate-bounce" />
-                  </div>
-                </div>
-              )}
-
-              {error && (
-                <div className="p-6 bg-rose-50 text-rose-600 rounded-2xl text-sm font-bold border border-rose-200 flex flex-col items-center text-center">
-                  <AlertCircle className="w-8 h-8 mb-3" />
-                  <p>{error}</p>
-                  <button onClick={handleGenerate} className="mt-4 px-6 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl shadow-sm text-xs font-bold uppercase tracking-wider transition-all">Tentar Novamente</button>
-                </div>
-              )}
-
-              {reportHtml && !loading && (
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-xl overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-500">
-                  <div className="p-6 border-b border-slate-100 bg-gradient-to-r from-indigo-50 to-emerald-50 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 bg-white rounded-lg shadow-sm text-indigo-600">
-                        <CheckCircle2 className="w-6 h-6" />
+              ) : (
+                <>
+                  {!reportHtml && !loading && (
+                    <div className="flex-1 flex flex-col justify-center items-center py-2 sm:py-16 text-center">
+                      <div className="w-16 h-16 sm:w-24 sm:h-24 bg-indigo-50/50 text-indigo-600 rounded-3xl flex items-center justify-center mx-auto mb-3 sm:mb-6 shadow-sm shrink-0 sm:mt-0">
+                        <BrainCircuit className="w-10 h-10 sm:w-14 sm:h-14" />
                       </div>
-                      <div>
-                        <h2 className="text-sm font-bold text-slate-800 tracking-tight">Mentoria Gerada com IA</h2>
-                        <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest text-left">Baseado em fatos, não suposições</p>
+                      <h3 className="text-xl sm:text-2xl font-black text-slate-800 tracking-tight shrink-0 px-2">O Olhar Clínico da Inteligência Artificial</h3>
+                      <p className="text-[13px] sm:text-base text-slate-500 mt-2 sm:mt-4 max-w-sm mx-auto leading-relaxed px-4 shrink-0">
+                        Nossa IA analisará cada transação, cruzar categorias e identificar padrões que você talvez não esteja percebendo. É como ter um assessor financeiro focado em você.
+                      </p>
+                      <div className="mt-8 sm:mt-8 w-full px-2 sm:px-0 shrink-0 mb-4 sm:mb-0">
+                        <button onClick={handleGenerate} disabled={transactions.length === 0} className="px-6 py-4 w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-lg shadow-indigo-600/20 transition-all flex items-center justify-center mx-auto disabled:opacity-50 text-sm active:scale-95 group">
+                          <Sparkles className="w-4 h-4 mr-2 group-hover:rotate-12 transition-transform" /> Começar Análise Profunda
+                        </button>
                       </div>
                     </div>
-                  </div>
-                  <div className="p-10 prose sm:prose-sm md:prose-base max-w-none ai-report-content text-left
-                    [&>h1]:text-2xl [&>h1]:font-black [&>h1]:text-slate-800 [&>h1]:mb-6
-                    [&>h2]:text-xl [&>h2]:font-bold [&>h2]:text-slate-800 [&>h2]:mt-8 [&>h2]:mb-4 [&>h2]:pb-3 [&>h2]:border-b [&>h2]:border-slate-100
-                    [&>h3]:text-lg [&>h3]:font-bold [&>h3]:text-slate-800 [&>h3]:mt-6 [&>h3]:mb-3
-                    [&>p]:text-sm [&>p]:text-slate-600 [&>p]:leading-relaxed [&>p]:mb-5
-                    [&>ul]:list-none [&>ul]:space-y-3 [&>ul]:mb-6
-                    [&>ul>li]:text-sm [&>ul>li]:text-slate-600 [&>ul>li]:flex [&>ul>li]:items-start [&>ul>li]:gap-2
-                    [&>ul>li]:before:content-['→'] [&>ul>li]:before:text-indigo-500 [&>ul>li]:before:font-bold
-                    [&>table]:w-full [&>table]:text-left [&>table]:border-collapse [&>table]:rounded-xl [&>table]:overflow-hidden [&>table]:my-6
-                    [&>table_th]:bg-slate-50 [&>table_th]:px-4 [&>table_th]:py-3 [&>table_th]:text-[10px] [&>table_th]:font-bold [&>table_th]:text-slate-400 [&>table_th]:uppercase
-                    [&>table_td]:px-4 [&>table_td]:py-3 [&>table_td]:text-xs [&>table_td]:text-slate-600 [&>table_td]:border-b [&>table_td]:border-slate-50">
-                    <ReactMarkdown>{reportHtml}</ReactMarkdown>
-                  </div>
-                </div>
+                  )}
+
+                  {loading && (
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-24 flex flex-col items-center justify-center text-indigo-600 overflow-hidden relative">
+                      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-indigo-50/30 via-transparent to-transparent opacity-50 scale-150 animate-pulse" />
+                      <Loader2 className="w-12 h-12 animate-spin mb-6 relative z-10" />
+                      <p className="font-bold text-sm tracking-widest text-slate-500 uppercase relative z-10">{loadingMessage}</p>
+                      <div className="mt-4 flex gap-1 relative z-10">
+                        <span className="w-1.5 h-1.5 bg-indigo-600 rounded-full animate-bounce [animation-delay:-0.3s]" />
+                        <span className="w-1.5 h-1.5 bg-indigo-600 rounded-full animate-bounce [animation-delay:-0.15s]" />
+                        <span className="w-1.5 h-1.5 bg-indigo-600 rounded-full animate-bounce" />
+                      </div>
+                    </div>
+                  )}
+
+                  {error && (
+                    <div className="p-6 bg-rose-50 text-rose-600 rounded-2xl text-sm font-bold border border-rose-200 flex flex-col items-center text-center">
+                      <AlertCircle className="w-8 h-8 mb-3" />
+                      <p>{error}</p>
+                      <button onClick={handleGenerate} className="mt-4 px-6 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl shadow-sm text-xs font-bold uppercase tracking-wider transition-all">Tentar Novamente</button>
+                    </div>
+                  )}
+
+                  {reportHtml && !loading && (
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-xl overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-500">
+                      <div className="p-6 border-b border-slate-100 bg-gradient-to-r from-indigo-50 to-emerald-50 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className="p-2 bg-white rounded-lg shadow-sm text-indigo-600">
+                            <CheckCircle2 className="w-6 h-6" />
+                          </div>
+                          <div>
+                            <h2 className="text-sm font-bold text-slate-800 tracking-tight">Mentoria Gerada com IA</h2>
+                            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest text-left">Baseado em fatos, não suposições</p>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="p-10 prose sm:prose-sm md:prose-base max-w-none ai-report-content text-left
+                        [&>h1]:text-2xl [&>h1]:font-black [&>h1]:text-slate-800 [&>h1]:mb-6
+                        [&>h2]:text-xl [&>h2]:font-bold [&>h2]:text-slate-800 [&>h2]:mt-8 [&>h2]:mb-4 [&>h2]:pb-3 [&>h2]:border-b [&>h2]:border-slate-100
+                        [&>h3]:text-lg [&>h3]:font-bold [&>h3]:text-slate-800 [&>h3]:mt-6 [&>h3]:mb-3
+                        [&>p]:text-sm [&>p]:text-slate-600 [&>p]:leading-relaxed [&>p]:mb-5
+                        [&>ul]:list-none [&>ul]:space-y-3 [&>ul]:mb-6
+                        [&>ul>li]:text-sm [&>ul>li]:text-slate-600 [&>ul>li]:flex [&>ul>li]:items-start [&>ul>li]:gap-2
+                        [&>ul>li]:before:content-['→'] [&>ul>li]:before:text-indigo-500 [&>ul>li]:before:font-bold
+                        [&>table]:w-full [&>table]:text-left [&>table]:border-collapse [&>table]:rounded-xl [&>table]:overflow-hidden [&>table]:my-6
+                        [&>table_th]:bg-slate-50 [&>table_th]:px-4 [&>table_th]:py-3 [&>table_th]:text-[10px] [&>table_th]:font-bold [&>table_th]:text-slate-400 [&>table_th]:uppercase
+                        [&>table_td]:px-4 [&>table_td]:py-3 [&>table_td]:text-xs [&>table_td]:text-slate-600 [&>table_td]:border-b [&>table_td]:border-slate-50">
+                        <ReactMarkdown>{reportHtml}</ReactMarkdown>
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </>
           )}
@@ -1622,6 +1691,7 @@ export const ReportsView = React.memo(function ReportsView({
           </div>
         </div>
       )}
+      <AIConfirmationModal isOpen={showConfirmModal} onConfirm={handleConfirmAI} onCancel={() => { setShowConfirmModal(false); setHasPendingGenerate(false); }} />
     </div>
   );
 });

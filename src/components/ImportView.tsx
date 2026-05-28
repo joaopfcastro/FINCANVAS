@@ -3,11 +3,12 @@ import { UploadCloud, BrainCircuit, Bot, Cpu, Trash2, FileText, Image as ImageIc
 import { collection, doc, setDoc, getDocs, deleteDoc, serverTimestamp, updateDoc, query, where } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { Transaction, UserProfile } from '../App';
-import { secureGenerateContent, Type } from '../lib/gemini';
+import { secureGenerateContent, Type, fetchAISettings } from '../lib/gemini';
 import { toast } from 'sonner';
 import { runLocalRecognition } from '../lib/recognition/engine/recognitionEngine';
 import { AUTO_ACCEPT, ACCEPT_WITH_BADGE, REVIEW_OR_AI } from '../lib/recognition/constants';
 import { parseOFX, parseCSV } from '../lib/import/parsers';
+import { AIConfirmationModal } from './AIConfirmationModal';
 
 function normalizeText(text: string): string {
   if (!text) return '';
@@ -39,6 +40,9 @@ export const ImportView = React.memo(function ImportView({ userId, onNavigateDas
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
 
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [pendingProcessFiles, setPendingProcessFiles] = useState<File[] | null>(null);
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       setFiles(prev => [...prev, ...Array.from(e.target.files!)]);
@@ -61,7 +65,55 @@ export const ImportView = React.memo(function ImportView({ userId, onNavigateDas
     };
   };
 
+  const handleConfirmAI = async (dontAskAgain: boolean) => {
+    setShowConfirmModal(false);
+    if (dontAskAgain) {
+      sessionStorage.setItem('ai_bypass_confirm', 'true');
+    }
+    if (pendingProcessFiles) {
+      const filesToProcess = pendingProcessFiles;
+      setPendingProcessFiles(null);
+      await continueProcess(filesToProcess);
+    }
+  };
+
   const handleProcess = async () => {
+    const localTransactions: any[] = [];
+    const aiFiles: File[] = [];
+
+    for (const file of files) {
+      const nameLower = file.name.toLowerCase();
+      if (nameLower.endsWith('.ofx') || nameLower.endsWith('.xml') || nameLower.endsWith('.csv') || nameLower.endsWith('.txt')) {
+        // structural local files
+      } else if (file.type.startsWith('image/') || nameLower.endsWith('.pdf') || file.type === 'application/pdf') {
+        aiFiles.push(file);
+      }
+    }
+
+    if (aiFiles.length > 0) {
+      const settings = await fetchAISettings();
+      const aiEnabled = settings?.aiEnabled ?? false;
+      const aiUseForOCR = settings?.aiUseForOCR ?? false;
+
+      if (!aiEnabled || !aiUseForOCR) {
+        toast.error("OCR por IA está desativado. Ative em Preferências > Inteligência Artificial ou importe OFX/CSV.");
+        return;
+      }
+
+      const bypass = sessionStorage.getItem('ai_bypass_confirm') === 'true';
+      const needsConfirm = (settings?.aiAlwaysAskBeforeSending ?? true) && !bypass;
+
+      if (needsConfirm) {
+        setPendingProcessFiles(files);
+        setShowConfirmModal(true);
+        return;
+      }
+    }
+
+    await continueProcess(files);
+  };
+
+  const continueProcess = async (filesToProcess: File[]) => {
     setLoading(true);
     setProgress(0);
     
@@ -85,7 +137,7 @@ export const ImportView = React.memo(function ImportView({ userId, onNavigateDas
       const localTransactions: any[] = [];
       const aiFiles: File[] = [];
 
-      for (const file of files) {
+      for (const file of filesToProcess) {
         const nameLower = file.name.toLowerCase();
         if (nameLower.endsWith('.ofx') || nameLower.endsWith('.xml')) {
           const text = await file.text();
@@ -373,6 +425,7 @@ Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, 
 
         </div>
       </div>
+      <AIConfirmationModal isOpen={showConfirmModal} onConfirm={handleConfirmAI} onCancel={() => { setShowConfirmModal(false); setPendingProcessFiles(null); }} />
     </div>
   );
 });

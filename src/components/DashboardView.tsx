@@ -30,11 +30,12 @@ import {
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { secureGenerateContent } from '../lib/gemini';
+import { secureGenerateContent, fetchAISettings } from '../lib/gemini';
 import { format } from 'date-fns';
 import { collection, addDoc, serverTimestamp, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { toast } from 'sonner';
+import { AIConfirmationModal } from './AIConfirmationModal';
 
 import { FilterConfig } from '../App';
 import { PeriodFilterToolbar } from './PeriodFilterToolbar';
@@ -87,6 +88,41 @@ export const DashboardView = React.memo(function DashboardView({
   const [modalType, setModalType] = useState<string | null>(null);
   const [modalAiInsight, setModalAiInsight] = useState('');
   const [modalAiLoading, setModalAiLoading] = useState(false);
+
+  const [aiSettings, setAiSettings] = useState<{ aiEnabled: boolean; aiUseForInsights: boolean } | null>(null);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [pendingAIAction, setPendingAIAction] = useState<'insights' | 'maiorDespesa' | null>(null);
+
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const settings = await fetchAISettings();
+        if (settings) {
+          setAiSettings({
+            aiEnabled: settings.aiEnabled,
+            aiUseForInsights: settings.aiUseForInsights
+          });
+        }
+      } catch (e) {
+        console.error("Failed to load AI settings in DashboardView:", e);
+      }
+    };
+    loadSettings();
+  }, [transactions]); // Reload settings when transactions or views change to keep it extremely state-fresh
+
+  const handleConfirmAI = async (dontAskAgain: boolean) => {
+    setShowConfirmModal(false);
+    if (dontAskAgain) {
+      sessionStorage.setItem('ai_bypass_confirm', 'true');
+    }
+    if (pendingAIAction === 'insights') {
+      setPendingAIAction(null);
+      await runGetInsights();
+    } else if (pendingAIAction === 'maiorDespesa') {
+      setPendingAIAction(null);
+      await runMaiorDespesaInsight();
+    }
+  };
 
   const [modalSearchTerm, setModalSearchTerm] = useState('');
   const [modalFilterDate, setModalFilterDate] = useState('');
@@ -462,7 +498,7 @@ export const DashboardView = React.memo(function DashboardView({
     setAiInsights(''); // Reset to allow fresh generation
   }, [currentMonthTransactions, filterConfig]);
 
-  const getInsights = async () => {
+  const runGetInsights = async () => {
     if (currentMonthTransactions.length === 0) return;
     setAiLoading(true);
     setAiInsights('');
@@ -536,7 +572,26 @@ export const DashboardView = React.memo(function DashboardView({
     }
   };
 
-  const getMaiorDespesaInsight = async () => {
+  const getInsights = async () => {
+    const settings = await fetchAISettings();
+    if (!settings || !settings.aiEnabled || !settings.aiUseForInsights) {
+      toast.error("Insights por IA desativados. Ative em Preferências > Inteligência Artificial.");
+      return;
+    }
+
+    const bypass = sessionStorage.getItem('ai_bypass_confirm') === 'true';
+    const needsConfirm = (settings.aiAlwaysAskBeforeSending ?? true) && !bypass;
+
+    if (needsConfirm) {
+      setPendingAIAction('insights');
+      setShowConfirmModal(true);
+      return;
+    }
+
+    await runGetInsights();
+  };
+
+  const runMaiorDespesaInsight = async () => {
     if (!maiorDespesa) return;
     setModalAiLoading(true);
     setModalAiInsight('');
@@ -606,6 +661,25 @@ export const DashboardView = React.memo(function DashboardView({
       setModalAiInsight('Falha ao gerar o insight.');
       setModalAiLoading(false);
     }
+  };
+
+  const getMaiorDespesaInsight = async () => {
+    const settings = await fetchAISettings();
+    if (!settings || !settings.aiEnabled || !settings.aiUseForInsights) {
+      toast.error("Insights por IA desativados. Ative em Preferências > Inteligência Artificial.");
+      return;
+    }
+
+    const bypass = sessionStorage.getItem('ai_bypass_confirm') === 'true';
+    const needsConfirm = (settings.aiAlwaysAskBeforeSending ?? true) && !bypass;
+
+    if (needsConfirm) {
+      setPendingAIAction('maiorDespesa');
+      setShowConfirmModal(true);
+      return;
+    }
+
+    await runMaiorDespesaInsight();
   };
 
   const modalData = modalType === 'receitas' ? currentMonthTransactions.filter(t => t.type === 'Receita') :
@@ -780,34 +854,52 @@ export const DashboardView = React.memo(function DashboardView({
           </div>
         </div>
 
-        <div className="bg-gradient-to-r from-indigo-600 to-purple-700 rounded-xl sm:rounded-2xl p-3 sm:p-5 text-white shadow-md sm:shadow-lg flex items-center justify-between gap-3 sm:gap-4 flex-shrink-0">
-          <div className="flex items-center gap-3 sm:gap-4 w-full">
-            <div className="bg-white/20 p-2 sm:p-3 rounded-lg sm:rounded-xl backdrop-blur-sm">
-              <Sparkles className="w-4 h-4 sm:w-6 sm:h-6 text-indigo-100" />
-            </div>
-            <div className="flex flex-col flex-1 min-w-0">
-              <div className="text-[11px] sm:text-sm md:text-base font-bold flex items-center gap-2">
-                Insight da IA {aiLoading && <span className="bg-white/10 px-1.5 py-0.5 inline-block rounded text-[9px] sm:text-[10px] uppercase tracking-tighter text-indigo-50">Analisando...</span>}
+        {aiSettings && (!aiSettings.aiEnabled || !aiSettings.aiUseForInsights) ? (
+          <div className="bg-slate-50 border border-slate-200 rounded-xl sm:rounded-2xl p-3 sm:p-5 text-slate-500 shadow-sm flex items-center justify-between gap-3 sm:gap-4 flex-shrink-0">
+            <div className="flex items-center gap-3 sm:gap-4 w-full">
+              <div className="bg-slate-100 p-2 sm:p-3 rounded-lg sm:rounded-xl border border-slate-200 text-slate-400">
+                <Sparkles className="w-5 h-5 sm:w-6 sm:h-6" />
               </div>
-              <p className="text-[9px] sm:text-xs md:text-sm text-indigo-100 leading-tight line-clamp-1 truncate mt-0.5">
-                {aiLoading ? (
-                  <span className="flex items-center"><Loader2 className="w-3 h-3 sm:w-4 sm:h-4 mr-1 animate-spin" /> {aiLoadingMessage}</span>
-                ) : aiInsights ? (
-                  'Insight gerado. Clique para ver.'
-                ) : (
-                  'Explore tendências do período.'
-                )}
-              </p>
+              <div className="flex flex-col flex-1 min-w-0">
+                <div className="text-[11px] sm:text-sm md:text-base font-bold text-slate-700 flex items-center gap-2">
+                  Insights por IA Desativados
+                </div>
+                <p className="text-[9px] sm:text-xs md:text-sm text-slate-400 leading-tight line-clamp-1 truncate mt-0.5">
+                  Insights por IA desativados. Ative em Preferências &gt; Inteligência Artificial.
+                </p>
+              </div>
             </div>
           </div>
-          <button 
-            onClick={aiInsights && !aiLoading ? () => setModalType('insight') : getInsights} 
-            disabled={aiLoading} 
-            className="bg-white/10 hover:bg-white/20 transition-colors border border-white/20 px-3 sm:px-5 py-1.5 sm:py-2.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-bold whitespace-nowrap uppercase tracking-wide shrink-0"
-          >
-            {aiInsights && !aiLoading ? 'Ver Insight' : 'Gerar'}
-          </button>
-        </div>
+        ) : (
+          <div className="bg-gradient-to-r from-indigo-600 to-purple-700 rounded-xl sm:rounded-2xl p-3 sm:p-5 text-white shadow-md sm:shadow-lg flex items-center justify-between gap-3 sm:gap-4 flex-shrink-0">
+            <div className="flex items-center gap-3 sm:gap-4 w-full">
+              <div className="bg-white/20 p-2 sm:p-3 rounded-lg sm:rounded-xl backdrop-blur-sm">
+                <Sparkles className="w-4 h-4 sm:w-6 sm:h-6 text-indigo-100" />
+              </div>
+              <div className="flex flex-col flex-1 min-w-0">
+                <div className="text-[11px] sm:text-sm md:text-base font-bold flex items-center gap-2">
+                  Insight da IA {aiLoading && <span className="bg-white/10 px-1.5 py-0.5 inline-block rounded text-[9px] sm:text-[10px] uppercase tracking-tighter text-indigo-50">Analisando...</span>}
+                </div>
+                <p className="text-[9px] sm:text-xs md:text-sm text-indigo-100 leading-tight line-clamp-1 truncate mt-0.5">
+                  {aiLoading ? (
+                    <span className="flex items-center"><Loader2 className="w-3 h-3 sm:w-4 sm:h-4 mr-1 animate-spin" /> {aiLoadingMessage}</span>
+                  ) : aiInsights ? (
+                    'Insight gerado. Clique para ver.'
+                  ) : (
+                    'Explore tendências do período.'
+                  )}
+                </p>
+              </div>
+            </div>
+            <button 
+              onClick={aiInsights && !aiLoading ? () => setModalType('insight') : getInsights} 
+              disabled={aiLoading} 
+              className="bg-white/10 hover:bg-white/20 transition-colors border border-white/20 px-3 sm:px-5 py-1.5 sm:py-2.5 rounded-lg sm:rounded-xl text-[10px] sm:text-xs font-bold whitespace-nowrap uppercase tracking-wide shrink-0"
+            >
+              {aiInsights && !aiLoading ? 'Ver Insight' : 'Gerar'}
+            </button>
+          </div>
+        )}
 
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden hidden md:flex flex-col">
           <div className="px-4 sm:px-6 py-4 border-b border-slate-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
@@ -1679,6 +1771,7 @@ export const DashboardView = React.memo(function DashboardView({
           </div>
         </div>
       )}
+      <AIConfirmationModal isOpen={showConfirmModal} onConfirm={handleConfirmAI} onCancel={() => { setShowConfirmModal(false); setPendingAIAction(null); }} />
     </div>
   );
 });

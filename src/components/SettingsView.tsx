@@ -967,7 +967,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     
                     {isCurrentProviderSaved && (
                       <p className="text-[11px] text-slate-400 font-mono">
-                        Máscara ativa do banco: {maskedKey}
+                        Chave ativa: {maskedKey}
                       </p>
                     )}
                   </div>

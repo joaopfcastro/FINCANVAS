@@ -18,11 +18,12 @@ import {
 import { collection, addDoc, updateDoc, doc, serverTimestamp, deleteDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { Transaction, UserProfile } from '../App';
-import { secureGenerateContent, Type } from '../lib/gemini';
+import { secureGenerateContent, Type, fetchAISettings } from '../lib/gemini';
 import { toast } from 'sonner';
 import { runLocalRecognition } from '../lib/recognition/engine/recognitionEngine';
 import { AUTO_ACCEPT, ACCEPT_WITH_BADGE, REVIEW_OR_AI } from '../lib/recognition/constants';
 import { mapToUserCategory } from '../lib/recognition/taxonomy/mapToUserCategory';
+import { AIConfirmationModal } from './AIConfirmationModal';
 
 interface ManualEntryModalProps {
   isOpen: boolean;
@@ -41,6 +42,9 @@ export const ManualEntryModal = React.memo(function ManualEntryModal({ isOpen, o
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [pendingAIAction, setPendingAIAction] = useState<{ type: 'ocr' | 'suggest'; file?: File } | null>(null);
   
   const { viewportHeight, offsetTop, isKeyboardOpen } = useVisualViewport();
   const [dragY, setDragY] = useState(0);
@@ -59,10 +63,23 @@ export const ManualEntryModal = React.memo(function ManualEntryModal({ isOpen, o
     }
   };
 
-  const handleCameraAutofill = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
-    const file = e.target.files[0];
-    
+  const handleConfirmAI = async (dontAskAgain: boolean) => {
+    setShowConfirmModal(false);
+    if (dontAskAgain) {
+      sessionStorage.setItem('ai_bypass_confirm', 'true');
+    }
+    if (pendingAIAction) {
+      const action = pendingAIAction;
+      setPendingAIAction(null);
+      if (action.type === 'ocr' && action.file) {
+        await runReceiptOcr(action.file);
+      } else if (action.type === 'suggest') {
+        await runAISuggestion();
+      }
+    }
+  };
+
+  const runReceiptOcr = async (file: File) => {
     try {
       setIsScanning(true);
       const base64 = await new Promise<string>((resolve) => {
@@ -180,8 +197,33 @@ Aviso: Não classifique nenhuma categoria.`
       toast.error('Erro ao processar imagem.');
     } finally {
       setIsScanning(false);
-      e.target.value = '';
     }
+  };
+
+  const handleCameraAutofill = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    const file = e.target.files[0];
+    e.target.value = '';
+
+    const settings = await fetchAISettings();
+    const aiEnabled = settings?.aiEnabled ?? false;
+    const aiUseForOCR = settings?.aiUseForOCR ?? false;
+
+    if (!aiEnabled || !aiUseForOCR) {
+      toast.error("OCR por IA está desativado. Ative em Preferências > Inteligência Artificial.");
+      return;
+    }
+
+    const bypass = sessionStorage.getItem('ai_bypass_confirm') === 'true';
+    const needsConfirm = (settings?.aiAlwaysAskBeforeSending ?? true) && !bypass;
+
+    if (needsConfirm) {
+      setPendingAIAction({ type: 'ocr', file });
+      setShowConfirmModal(true);
+      return;
+    }
+
+    await runReceiptOcr(file);
   };
 
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -228,8 +270,7 @@ Aviso: Não classifique nenhuma categoria.`
     merchantKey?: string;
   } | null>(null);
 
-  const suggestCategory = async () => {
-    if (!manualForm.desc) return;
+  const runAISuggestion = async () => {
     setIsSuggesting(true);
     try {
       const userCategories = profile?.categories || [
@@ -241,7 +282,6 @@ Aviso: Não classifique nenhuma categoria.`
       const parsedAmount = parseFloat(manualForm.amount.replace(',', '.')) || -0.01;
       const finalAmount = manualType === 'Despesa' ? -Math.abs(parsedAmount) : Math.abs(parsedAmount);
 
-      // 1. montar RawTransactionInput
       const rawInput = {
         description: manualForm.desc,
         amount: finalAmount,
@@ -249,42 +289,19 @@ Aviso: Não classifique nenhuma categoria.`
         source: manualForm.source || 'Manual'
       };
 
-      // 2. chamar runLocalRecognition primeiro
       const localResult = runLocalRecognition(rawInput, [], [], userCategories);
 
-      // 3. se localResult.confidence >= ACCEPT_WITH_BADGE:
-      if (localResult && localResult.confidence >= ACCEPT_WITH_BADGE) {
-        setManualForm(prev => ({
-          ...prev,
-          cat: localResult.category,
-          desc: localResult.cleanDescription || prev.desc
-        }));
-        setRecognitionMetadata({
-          recognitionConfidence: localResult.confidence,
-          recognitionMethod: localResult.method,
-          recognitionEvidence: localResult.evidence,
-          needsReview: localResult.needsReview,
-          aiUsed: false,
-          merchantKey: localResult.merchantKey
-        });
-        toast.success(`Categoria e descrição recomendadas localmente (${Math.round(localResult.confidence * 100)}% de confiança)!`);
-        setIsSuggesting(false);
-        return;
-      }
-
-      // 4. se confidence < REVIEW_OR_AI: só então chamar IA fallback
-      let finalCat = localResult.category;
-      let finalDesc = localResult.cleanDescription || manualForm.desc;
+      let finalCat = localResult?.category || 'Outros';
+      let finalDesc = localResult?.cleanDescription || manualForm.desc;
       let finalSource = manualForm.source;
       let usedAi = false;
-      let finalConfidence = localResult.confidence;
-      let finalMethod = localResult.method;
-      let finalEvidence = localResult.evidence;
-      let finalNeedsReview = localResult.needsReview;
-      let finalMerchantKey = localResult.merchantKey;
+      let finalConfidence = localResult?.confidence || 0.1;
+      let finalMethod = localResult?.method || 'LOCAL_MANUAL';
+      let finalEvidence = localResult?.evidence || [];
+      let finalNeedsReview = localResult?.needsReview ?? true;
+      let finalMerchantKey = localResult?.merchantKey;
 
-      if (localResult.confidence < REVIEW_OR_AI) {
-        const prompt = `Analise a descrição desta transação financeira e classifique-a de forma inteligente.
+      const prompt = `Analise a descrição desta transação financeira e classifique-a de forma inteligente.
 Descrição: "${manualForm.desc}" (${manualType === 'Receita' ? 'Receita/Entrada' : 'Despesa/Saída'})
 
 Siga estas instruções críticas:
@@ -292,52 +309,47 @@ Siga estas instruções críticas:
 2. Se a descrição contiver nomes poluídos ou abreviações (ex: "POSTO IPIRANGA JACAREI", "IFD*RESTAURANTE", "UBER *TRIP HELP_CENTER"), sugira um nome limpo e amigável (ex: "Posto Ipiranga", "iFood", "Uber").
 3. Se for detectada a origem/banco implícita (ex: "Nubank", "Itaú", "Inter", "Bradesco", "Santander", "Dinheiro", "Pix"), retorne-a no campo correspondente.`;
 
-        const response = await secureGenerateContent({
-          task: 'categoryFallback',
-          model: 'gemini-3.5-flash',
-          contents: prompt,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                category: { type: Type.STRING, description: "A categoria correspondente" },
-                cleanDescription: { type: Type.STRING, description: "Nome limpo e amigável do estabelecimento" },
-                source: { type: Type.STRING, description: "Banco ou origem de pagamento, se identificado" }
-              },
-              required: ["category", "cleanDescription"]
-            }
-          }
-        });
-
-        if (response.text) {
-          let txt = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
-          const data = JSON.parse(txt);
-          if (data.category) {
-            finalDesc = data.cleanDescription || finalDesc;
-            if (data.source) {
-              finalSource = data.source;
-            }
-            usedAi = true;
-            finalConfidence = 0.75; // Max 0.75 for non-deterministic AI fallback suggest
-            finalMethod = 'AI_FALLBACK';
-
-            // Validate using taxonomy/mapToUserCategory
-            const mappedCat = mapToUserCategory(data.category, userCategories);
-            if (mappedCat) {
-              finalCat = mappedCat;
-              finalNeedsReview = false;
-              finalEvidence = ['Mapeado e Higienizado por Inteligência Artificial (Gemini Fallback) - Validado localmente'];
-            } else {
-              finalCat = data.category;
-              finalNeedsReview = true; // Mark needsReview true since it is a new/proposed category
-              finalEvidence = ['Sugerido por Inteligência Artificial (Gemini Fallback) - Categoria sugerida não existe no perfil de categorias cadastradas do usuário'];
-            }
+      const response = await secureGenerateContent({
+        task: 'categoryFallback',
+        model: 'gemini-3.5-flash',
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              category: { type: Type.STRING, description: "A categoria correspondente" },
+              cleanDescription: { type: Type.STRING, description: "Nome limpo e amigável do estabelecimento" },
+              source: { type: Type.STRING, description: "Banco ou origem de pagamento, se identificado" }
+            },
+            required: ["category", "cleanDescription"]
           }
         }
-      } else {
-        // Between REVIEW_OR_AI and ACCEPT_WITH_BADGE, we use local suggestions as "Probable"
-        toast.info(`Sugerido localmente ("Provável" - ${Math.round(localResult.confidence * 100)}%)`);
+      });
+
+      if (response.text) {
+        let txt = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
+        const data = JSON.parse(txt);
+        if (data.category) {
+          finalDesc = data.cleanDescription || finalDesc;
+          if (data.source) {
+            finalSource = data.source;
+          }
+          usedAi = true;
+          finalConfidence = 0.75;
+          finalMethod = 'AI_FALLBACK';
+
+          const mappedCat = mapToUserCategory(data.category, userCategories);
+          if (mappedCat) {
+            finalCat = mappedCat;
+            finalNeedsReview = false;
+            finalEvidence = ['Mapeado e Higienizado por Inteligência Artificial (Gemini Fallback) - Validado localmente'];
+          } else {
+            finalCat = data.category;
+            finalNeedsReview = true;
+            finalEvidence = ['Sugerido por Inteligência Artificial (Gemini Fallback) - Categoria sugerida não existe no perfil de categorias cadastradas do usuário'];
+          }
+        }
       }
 
       setManualForm(prev => ({
@@ -359,10 +371,112 @@ Siga estas instruções críticas:
       if (usedAi) {
         toast.success('Categoria e descrição refinadas com Inteligência Artificial!');
       }
+    } catch (err) {
+      console.error(err);
+      toast.error("Erro na busca de sugestão via IA. Mantendo o fluxo local.");
+    } finally {
+      setIsSuggesting(false);
+    }
+  };
+
+  const suggestCategory = async () => {
+    if (!manualForm.desc) return;
+    setIsSuggesting(true);
+    try {
+      const userCategories = profile?.categories || [
+        'Alimentação', 'Transporte', 'Lazer', 'Saúde', 
+        'Educação', 'Moradia', 'Salário', 'Investimentos', 
+        'Compras Online', 'Assinaturas', 'Outros'
+      ];
+
+      const parsedAmount = parseFloat(manualForm.amount.replace(',', '.')) || -0.01;
+      const finalAmount = manualType === 'Despesa' ? -Math.abs(parsedAmount) : Math.abs(parsedAmount);
+
+      const rawInput = {
+        description: manualForm.desc,
+        amount: finalAmount,
+        detectedDirection: manualType,
+        source: manualForm.source || 'Manual'
+      };
+
+      const localResult = runLocalRecognition(rawInput, [], [], userCategories);
+
+      if (localResult && localResult.confidence >= ACCEPT_WITH_BADGE) {
+        setManualForm(prev => ({
+          ...prev,
+          cat: localResult.category,
+          desc: localResult.cleanDescription || prev.desc
+        }));
+        setRecognitionMetadata({
+          recognitionConfidence: localResult.confidence,
+          recognitionMethod: localResult.method,
+          recognitionEvidence: localResult.evidence,
+          needsReview: localResult.needsReview,
+          aiUsed: false,
+          merchantKey: localResult.merchantKey
+        });
+        toast.success(`Categoria e descrição recomendadas localmente (${Math.round(localResult.confidence * 100)}% de confiança)!`);
+        setIsSuggesting(false);
+        return;
+      }
+
+      const settings = await fetchAISettings();
+      const aiEnabled = settings?.aiEnabled ?? false;
+      const aiUseForCategoryFallback = settings?.aiUseForCategoryFallback ?? false;
+      const aiAllowed = aiEnabled && aiUseForCategoryFallback;
+
+      if (localResult.confidence < REVIEW_OR_AI) {
+        if (aiAllowed) {
+          const bypass = sessionStorage.getItem('ai_bypass_confirm') === 'true';
+          const needsConfirm = (settings?.aiAlwaysAskBeforeSending ?? true) && !bypass;
+
+          if (needsConfirm) {
+            setIsSuggesting(false);
+            setPendingAIAction({ type: 'suggest' });
+            setShowConfirmModal(true);
+            return;
+          }
+
+          await runAISuggestion();
+        } else {
+          // If AI is disabled, use only local recognition. Since confidence is low, set needsReview = true.
+          setManualForm(prev => ({
+            ...prev,
+            cat: localResult.category || 'Outros',
+            desc: localResult.cleanDescription || prev.desc
+          }));
+          setRecognitionMetadata({
+            recognitionConfidence: localResult.confidence,
+            recognitionMethod: localResult.method,
+            recognitionEvidence: localResult.evidence,
+            needsReview: true,
+            aiUsed: false,
+            merchantKey: localResult.merchantKey
+          });
+          toast.warning("Classificação por IA desativada. Salvo com categoria local (Revisão necessária).");
+          setIsSuggesting(false);
+        }
+      } else {
+        // Between REVIEW_OR_AI and ACCEPT_WITH_BADGE, we use local suggestions as "Probable"
+        setManualForm(prev => ({
+          ...prev,
+          cat: localResult.category || 'Outros',
+          desc: localResult.cleanDescription || prev.desc
+        }));
+        setRecognitionMetadata({
+          recognitionConfidence: localResult.confidence,
+          recognitionMethod: localResult.method,
+          recognitionEvidence: localResult.evidence,
+          needsReview: localResult.confidence < ACCEPT_WITH_BADGE ? true : localResult.needsReview,
+          aiUsed: false,
+          merchantKey: localResult.merchantKey
+        });
+        toast.info(`Sugerido localmente ("Provável" - ${Math.round(localResult.confidence * 100)}%)`);
+        setIsSuggesting(false);
+      }
     } catch (e) {
       console.error(e);
       toast.error('Erro ao sugerir categoria.');
-    } finally {
       setIsSuggesting(false);
     }
   };
@@ -810,6 +924,7 @@ Siga estas instruções críticas:
               </button>
             </div>
           </form>
+          <AIConfirmationModal isOpen={showConfirmModal} onConfirm={handleConfirmAI} onCancel={() => { setShowConfirmModal(false); setPendingAIAction(null); }} />
       </div>
     </div>
   );
