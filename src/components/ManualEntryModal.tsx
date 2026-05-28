@@ -173,9 +173,10 @@ Aviso: Não classifique nenhuma categoria.`
           setRecognitionMetadata({
             recognitionConfidence: localResult.confidence,
             recognitionMethod: localResult.method,
-            recognitionEvidence: localResult.evidence,
+            recognitionEvidence: ["Dados extraídos por OCR de IA", ...localResult.evidence],
             needsReview: localResult.needsReview,
-            aiUsed: false,
+            aiUsed: true,
+            aiReason: "OCR_EXTRACTION",
             merchantKey: localResult.merchantKey
           });
         }
@@ -271,6 +272,7 @@ Aviso: Não classifique nenhuma categoria.`
     recognitionEvidence?: string[];
     needsReview?: boolean;
     aiUsed?: boolean;
+    aiReason?: string;
     merchantKey?: string;
   } | null>(null);
 
@@ -558,6 +560,7 @@ Siga estas instruções críticas:
         recognitionEvidence: recognitionMetadata?.recognitionEvidence ?? ['Inserido ou editado manualmente'],
         needsReview: recognitionMetadata?.needsReview ?? false,
         aiUsed: recognitionMetadata?.aiUsed ?? false,
+        aiReason: recognitionMetadata?.aiReason || null,
         merchantKey: recognitionMetadata?.merchantKey ?? ''
       };
 

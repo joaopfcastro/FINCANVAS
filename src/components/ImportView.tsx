@@ -332,7 +332,7 @@ Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, 
       } else {
         const summaryMsg = `Importação concluída:
 - ${localRecognizedCount} reconhecidas localmente
-- ${aiFallbackAppliedCount} por IA fallback
+- ${aiFallbackAppliedCount} extraídas por OCR com IA
 - ${needsReviewTransactionsCount} precisam revisão`;
         
         toast.success(<div className="whitespace-pre-line font-medium text-xs">{summaryMsg}</div>, { duration: 6000 });

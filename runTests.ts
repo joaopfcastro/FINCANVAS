@@ -1119,6 +1119,35 @@ async function runTests() {
     failed++;
   }
 
+  // 29. Testes obrigatórios da Fase 5.2 - Refinamento do resumo e metadata de OCR
+  try {
+    console.log("=== INICIANDO TESTE 29: FASE 5.2 REFINAMENTO DO RESUMO E METADATA DE OCR ===");
+
+    const importViewText = fs.readFileSync('./src/components/ImportView.tsx', 'utf8');
+    const manualEntryText = fs.readFileSync('./src/components/ManualEntryModal.tsx', 'utf8');
+
+    // 1. ImportView não deve mostrar "por IA fallback" para OCR, deve mostrar "extraídas por OCR com IA"
+    assert(!importViewText.includes("por IA fallback"), "ImportView não deve conter 'por IA fallback'");
+    assert(importViewText.includes("extraídas por OCR com IA"), "ImportView deve mostrar 'extraídas por OCR com IA'");
+
+    // 2. ManualEntryModal OCR deve salvar aiUsed=true, aiReason="OCR_EXTRACTION", preservar localResult.method, e adicionar evidência específica
+    assert(manualEntryText.includes("aiUsed: true"), "ManualEntryModal deve salvar aiUsed: true para OCR");
+    assert(manualEntryText.includes("aiReason: \"OCR_EXTRACTION\""), "ManualEntryModal deve salvar aiReason: \"OCR_EXTRACTION\" para OCR");
+    assert(manualEntryText.includes("recognitionMethod: localResult.method"), "ManualEntryModal deve salvar recognitionMethod como localResult.method");
+    assert(manualEntryText.includes("\"Dados extraídos por OCR de IA\""), "ManualEntryModal deve conter evidência 'Dados extraídos por OCR de IA'");
+
+    passed++;
+    console.log("✅ PASSED: ImportView não mostra 'por IA fallback' para OCR");
+    console.log("✅ PASSED: ImportView mostra 'extraídas por OCR com IA'");
+    console.log("✅ PASSED: ManualEntryModal OCR salva aiUsed=true");
+    console.log("✅ PASSED: ManualEntryModal OCR salva aiReason='OCR_EXTRACTION'");
+    console.log("✅ PASSED: ManualEntryModal OCR preserva recognitionMethod localResult.method");
+    console.log("✅ PASSED: ManualEntryModal OCR adiciona evidência 'Dados extraídos por OCR de IA'");
+  } catch (err: any) {
+    console.error("Erro no teste 29:", err);
+    failed++;
+  }
+
   console.log(`\n=== RESULTADO DOS TESTES: ${passed} Passaram | ${failed} Falharam ===`);
   if (failed > 0) {
     process.exit(1);
