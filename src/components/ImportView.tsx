@@ -313,12 +313,12 @@ Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, 
 
       // Extract statistics for beautiful summary output
       let localRecognizedCount = 0;
-      let aiFallbackAppliedCount = 0;
+      let aiOcrExtractedCount = 0;
       let needsReviewTransactionsCount = 0;
 
       for (const item of transactionsToInsert) {
         if (item.aiUsed) {
-          aiFallbackAppliedCount++;
+          aiOcrExtractedCount++;
         } else {
           localRecognizedCount++;
         }
@@ -332,7 +332,7 @@ Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, 
       } else {
         const summaryMsg = `Importação concluída:
 - ${localRecognizedCount} reconhecidas localmente
-- ${aiFallbackAppliedCount} extraídas por OCR com IA
+- ${aiOcrExtractedCount} extraídas por OCR com IA
 - ${needsReviewTransactionsCount} precisam revisão`;
         
         toast.success(<div className="whitespace-pre-line font-medium text-xs">{summaryMsg}</div>, { duration: 6000 });

@@ -1148,6 +1148,57 @@ async function runTests() {
     failed++;
   }
 
+  // 30. Testes obrigatórios da Fase 6 - Limpeza final, auditoria e hardening
+  try {
+    console.log("=== INICIANDO TESTE 30: FASE 6 LIMPEZA FINAL, AUDITORIA E HARDENING ===");
+
+    const importViewText = fs.readFileSync('./src/components/ImportView.tsx', 'utf8');
+    const manualEntryText = fs.readFileSync('./src/components/ManualEntryModal.tsx', 'utf8');
+
+    // 1. Variável interna aiFallbackAppliedCount foi renomeada para aiOcrExtractedCount
+    assert(!importViewText.includes("aiFallbackAppliedCount"), "ImportView deve ter renomeado a variável interna aiFallbackAppliedCount para aiOcrExtractedCount");
+    assert(importViewText.includes("aiOcrExtractedCount"), "ImportView deve usar a variável interna renomeada aiOcrExtractedCount");
+
+    // Helper recursivo para buscar arquivos .ts / .tsx
+    function getFilesRecursively(dir: string): string[] {
+      let results: string[] = [];
+      const list = fs.readdirSync(dir);
+      list.forEach(file => {
+        const fullPath = path.join(dir, file);
+        const stat = fs.statSync(fullPath);
+        if (stat && stat.isDirectory()) {
+          results = results.concat(getFilesRecursively(fullPath));
+        } else if (file.endsWith('.ts') || file.endsWith('.tsx')) {
+          results.push(fullPath);
+        }
+      });
+      return results;
+    }
+
+    // 2. Nenhuma ocorrência de /api/gemini em src/
+    const srcFiles = getFilesRecursively('src');
+    for (const f of srcFiles) {
+      const content = fs.readFileSync(f, 'utf8');
+      assert(!content.includes("/api/gemini"), `Arquivo ${f} não deve chamar o endpoint legado /api/gemini`);
+    }
+
+    // 3. Nenhuma chave Pluggy sendo salva em localStorage
+    for (const f of srcFiles) {
+      const content = fs.readFileSync(f, 'utf8');
+      const hasLocalStorageSet = content.includes("localStorage.setItem('PREF_PLUGGY_CLIENT_SECRET'") || 
+                                 content.includes('localStorage.setItem("PREF_PLUGGY_CLIENT_SECRET"');
+      assert(!hasLocalStorageSet, `Arquivo ${f} não pode persistir segredos da Pluggy no localStorage`);
+    }
+
+    passed++;
+    console.log("✅ PASSED: Variável aiFallbackAppliedCount renomeada com sucesso para aiOcrExtractedCount");
+    console.log("✅ PASSED: Nenhum componente chama o endpoint legado /api/gemini diretamente");
+    console.log("✅ PASSED: Nenhuma chave sensível ou segredo da Pluggy é persistido no localStorage");
+  } catch (err: any) {
+    console.error("Erro no teste 30:", err);
+    failed++;
+  }
+
   console.log(`\n=== RESULTADO DOS TESTES: ${passed} Passaram | ${failed} Falharam ===`);
   if (failed > 0) {
     process.exit(1);
