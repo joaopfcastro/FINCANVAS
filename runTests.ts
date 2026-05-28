@@ -668,6 +668,80 @@ async function runTests() {
     failed++;
   }
 
+  // 23. Testes obrigatórios da Fase 1 - IA Multiprovedor e OpenCode API
+  try {
+    console.log("=== INICIANDO TESTE 23: FASE 1 IA MULTIPROVEDOR ===");
+
+    const providerRegistryMod = await import('./src/lib/ai/providerRegistry.js');
+    const { 
+      PROVIDER_REGISTRY, 
+      isValidProvider, 
+      getDefaultModel, 
+      maskApiKey, 
+      getDefaultAISettings, 
+      isLocalBaseUrl, 
+      validateProviderConnectionConfig 
+    } = providerRegistryMod;
+
+    // 1-7. providerRegistry contém todos os providers
+    assert(PROVIDER_REGISTRY.hasOwnProperty('gemini'), "providerRegistry contém gemini");
+    assert(PROVIDER_REGISTRY.hasOwnProperty('openai'), "providerRegistry contém openai");
+    assert(PROVIDER_REGISTRY.hasOwnProperty('anthropic'), "providerRegistry contém anthropic");
+    assert(PROVIDER_REGISTRY.hasOwnProperty('openrouter'), "providerRegistry contém openrouter");
+    assert(PROVIDER_REGISTRY.hasOwnProperty('ollama'), "providerRegistry contém ollama");
+    assert(PROVIDER_REGISTRY.hasOwnProperty('custom_openai_compatible'), "providerRegistry contém custom_openai_compatible");
+    assert(PROVIDER_REGISTRY.hasOwnProperty('opencode_api'), "providerRegistry contém opencode_api");
+
+    // 8. O nome visual de opencode_api é exatamente "OpenCode API"
+    assert(PROVIDER_REGISTRY['opencode_api']?.name === "OpenCode API", "O nome visual de opencode_api é exatamente 'OpenCode API'");
+
+    // 9. isValidProvider rejeita provider desconhecido
+    assert(isValidProvider('unknown_provider') === false, "isValidProvider rejeita provider desconhecido");
+    assert(isValidProvider('gemini') === true, "isValidProvider aceita 'gemini'");
+
+    // 10. cada provider tem defaultModel
+    const allProviders = Object.keys(PROVIDER_REGISTRY) as any[];
+    const allHaveModel = allProviders.every(p => !!getDefaultModel(p));
+    assert(allHaveModel === true, "Cada provider cadastrado possui um defaultModel correspondente");
+
+    // 11. maskApiKey não retorna a chave completa
+    const testKey = "sk-1234567890abcdef";
+    const masked = maskApiKey(testKey);
+    assert(masked !== testKey, "maskApiKey não retorna a chave de API de forma aberta");
+    assert(masked.startsWith("sk-12") || masked.startsWith("••••"), "maskApiKey mascara com segurança mantendo no máximo os primeiros caracteres");
+
+    // 12. getDefaultAISettings retorna aiEnabled=false
+    const defaultSettings = getDefaultAISettings();
+    assert(defaultSettings.aiEnabled === false, "getDefaultAISettings retorna aiEnabled = false por padrão");
+
+    // 13. opencode_api exige baseUrl
+    const valNoBaseUrl = validateProviderConnectionConfig('opencode_api', '', 'my-api-key', 'development');
+    assert(valNoBaseUrl.isValid === false, "opencode_api sem baseUrl deve ser considerado inválido");
+
+    // 14. opencode_api permite apiKey opcional apenas em baseUrl local
+    const valWithApiKeyLocal = validateProviderConnectionConfig('opencode_api', 'http://localhost:8000', '', 'development');
+    assert(valWithApiKeyLocal.isValid === true, "opencode_api sem apiKey é válido caso baseUrl seja local");
+
+    const valNoApiKeyRemote = validateProviderConnectionConfig('opencode_api', 'http://remote-api.com', '', 'development');
+    assert(valNoApiKeyRemote.isValid === false, "opencode_api remoto sem apiKey deve ser considerado inválido");
+
+    // 15. opencode_api remoto em produção exige https
+    const valRemoteProductionHttp = validateProviderConnectionConfig('opencode_api', 'http://remote-api.com', 'my-key', 'production');
+    assert(valRemoteProductionHttp.isValid === false, "opencode_api remoto usando HTTP em produção deve ser considerado inválido");
+
+    const valRemoteProductionHttps = validateProviderConnectionConfig('opencode_api', 'https://remote-api.com', 'my-key', 'production');
+    assert(valRemoteProductionHttps.isValid === true, "opencode_api remoto usando HTTPS em produção deve ser considerado válido");
+
+    // 16. Firestore rules bloqueiam users/{uid}/secrets/ai
+    const fsRulesContent = fs.readFileSync('./firestore.rules', 'utf8');
+    assert(fsRulesContent.includes("match /secrets/{secretId}") && fsRulesContent.includes("allow read, write: if false;"), "Firestore rules bloqueiam users/{uid}/secrets/{secretId} impedindo leitura/escrita client side");
+
+    passed++;
+  } catch (err: any) {
+    console.error("Erro no teste 23:", err);
+    failed++;
+  }
+
   console.log(`\n=== RESULTADO DOS TESTES: ${passed} Passaram | ${failed} Falharam ===`);
   if (failed > 0) {
     process.exit(1);
