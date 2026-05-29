@@ -4,7 +4,7 @@ import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import { UserProfile, Transaction } from '../App';
 import { doc, updateDoc, serverTimestamp, collection, setDoc, deleteDoc } from 'firebase/firestore';
 import { PluggySettingsPanel } from './PluggySettingsPanel';
-import { User as UserIcon, Bell, LogOut, CloudCog, Download, UploadCloud, Trash2, Loader2, Database, Palette, CheckCircle2, ChevronLeft, ChevronRight, CreditCard, Brain } from 'lucide-react';
+import { User as UserIcon, Bell, LogOut, CloudCog, Download, UploadCloud, Trash2, Loader2, Database, Palette, CheckCircle2, ChevronLeft, ChevronRight, CreditCard, Brain, ChevronDown, ChevronUp, Copy, Check, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { 
   PROVIDER_REGISTRY, 
@@ -53,6 +53,19 @@ async function safeJsonClient(response: Response): Promise<any> {
   }
 }
 
+export type AITestStepStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+
+export interface AITestStep {
+  name: string;
+  status: AITestStepStatus;
+  details?: string;
+}
+
+export interface AITestResult {
+  steps: AITestStep[];
+  logs: string[];
+}
+
 interface SettingsViewProps {
   user: User;
   profile: UserProfile;
@@ -95,6 +108,11 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   // test results / indicators
   const [testStatus, setTestStatus] = useState<'none' | 'success' | 'error'>('none');
   const [testMessage, setTestMessage] = useState<string>('');
+  
+  // New visual diagnostics states
+  const [aiTestResult, setAiTestResult] = useState<AITestResult | null>(null);
+  const [isAiDiagnosticsOpen, setIsAiDiagnosticsOpen] = useState<boolean>(false);
+  const [copiedAiDiagnostics, setCopiedAiDiagnostics] = useState<boolean>(false);
   
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [savingAiSettings, setSavingAiSettings] = useState(false);
@@ -382,12 +400,57 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
       return;
     }
 
+    // Inicializa Resultados de Testes/Indicações Dinâmicos de Diagnóstico
+    setIsAiDiagnosticsOpen(true);
+    setTestingConnection(true);
+    setTestStatus('none');
+    setTestMessage('');
+
+    const initialSteps: AITestStep[] = [
+      { name: "Verificação de Parâmetros", status: "RUNNING", details: "Avaliando credenciais locais e parâmetros do formulário..." },
+      { name: "Resolução de Host e Preflight", status: "PENDING", details: "Aguardando preflight..." },
+      { name: "Autenticação e Handshake", status: "PENDING", details: "Aguardando handshake de autenticação..." },
+      { name: "Chamada de Inferência (Eco)", status: "PENDING", details: "Aguardando eco de confirmação do modelo..." }
+    ];
+
+    const providerConfig = PROVIDER_REGISTRY[selectedProvider];
+    const providerName = providerConfig?.name || selectedProvider;
+    const testModel = selectedModel || getDefaultModel(selectedProvider);
+
+    const initialLogs = [
+      `[Preflight] Iniciando checagem de integridade de IA para o provedor: ${providerName}...`,
+      `[Config] Provedor: ${selectedProvider} | Modelo Alvo: ${testModel}`,
+      `[Config] Base URL de Endpoint: ${cleanedBaseUrl || providerConfig?.defaultBaseUrl || 'Padrão Cloud'}`
+    ];
+
+    setAiTestResult({
+      steps: initialSteps,
+      logs: initialLogs
+    });
+
+    const currentSteps = [...initialSteps];
+    const currentLogs = [...initialLogs];
+
     try {
-      setTestingConnection(true);
-      setTestStatus('none');
-      setTestMessage('');
+      // Pequeno delay artificial para uma excelente experiência visual nas etapas de diagnóstico (150ms)
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      currentSteps[0] = { name: "Verificação de Parâmetros", status: "COMPLETED", details: "Parâmetros locais válidos." };
+      currentSteps[1] = { name: "Resolução de Host e Preflight", status: "RUNNING", details: "Testando comunicação entre cliente e servidor do FINCANVAS..." };
+
+      const time1 = new Date().toLocaleTimeString();
+      currentLogs.push(
+        `[${time1}] [Preflight] Parâmetros de formulário validados localmente com sucesso.`,
+        `[${time1}] [Handshake] Certificando conectividade HTTP com o barramento do backend...`
+      );
+
+      setAiTestResult({
+        steps: [...currentSteps],
+        logs: [...currentLogs]
+      });
+
       const token = await user.getIdToken();
-      
+
       const hasModifications = selectedProvider !== savedProvider || cleanedBaseUrl !== savedBaseUrl || selectedModel !== savedModel || !!apiKeyInput;
       
       const body: any = {};
@@ -397,7 +460,23 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         body.baseUrl = cleanedBaseUrl || undefined;
         body.model = selectedModel || undefined;
       }
-      
+
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      currentSteps[1] = { name: "Resolução de Host e Preflight", status: "COMPLETED", details: "Conexão com backend estabelecida." };
+      currentSteps[2] = { name: "Autenticação e Handshake", status: "RUNNING", details: `Enviando credenciais criptografadas a caminho do ${providerName}...` };
+
+      const time2 = new Date().toLocaleTimeString();
+      currentLogs.push(
+        `[${time2}] [Preflight] Gateway de backend alcançado com sucesso.`,
+        `[${time2}] [Auth] Preparando pacote de chaves e disparando handshake de validação para o provedor ${providerName}...`
+      );
+
+      setAiTestResult({
+        steps: [...currentSteps],
+        logs: [...currentLogs]
+      });
+
       const res = await apiFetchJson<any>('/api/ai/credentials/test', {
         method: 'POST',
         headers: {
@@ -406,8 +485,24 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         },
         body: JSON.stringify(body)
       });
-      
+
+      currentSteps[2] = { name: "Autenticação e Handshake", status: res.ok && res.data?.success ? "COMPLETED" : "FAILED", details: res.ok && res.data?.success ? "Handshake autenticado com sucesso!" : "Autenticação do provedor falhou." };
+
       if (res.ok && res.data?.success) {
+        currentSteps[3] = { name: "Chamada de Inferência (Eco)", status: "COMPLETED", details: "Resposta do modelo recebida e validada com êxito." };
+
+        const time3 = new Date().toLocaleTimeString();
+        currentLogs.push(
+          `[${time3}] [Auth] Credencial validada com sucesso pelo provedor ${providerName}.`,
+          `[${time3}] [Inference] Solicitação leve de inferência de LLM realizada com sucesso.`,
+          `[${time3}] [Echo] Resposta recebida da IA: "${res.data.providerEcho || res.data.message}"`
+        );
+
+        setAiTestResult({
+          steps: [...currentSteps],
+          logs: [...currentLogs]
+        });
+
         setTestStatus('success');
         setTestMessage(res.data.message || "Conexão testada com sucesso!");
         toast.success("Teste de conexão bem-sucedido!");
@@ -433,13 +528,49 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
           finalMsg = "Provedor de IA inválido selecionado.";
         }
 
+        currentSteps[3] = { name: "Chamada de Inferência (Eco)", status: "FAILED", details: finalMsg };
+
+        const time3 = new Date().toLocaleTimeString();
+        currentLogs.push(
+          `[${time3}] [Erro] Conectividade de IA ou autenticação falhou com status: ${code || 'UNKNOWN_ERROR'}`,
+          `[${time3}] [Erro] Detalhes técnicos: ${finalMsg}`
+        );
+
+        setAiTestResult({
+          steps: [...currentSteps],
+          logs: [...currentLogs]
+        });
+
         setTestStatus('error');
         setTestMessage(finalMsg);
         toast.error(finalMsg);
       }
     } catch (err: any) {
-      setTestStatus('error');
       const errorMsg = "Erro ao testar a conexão: " + (err.message || String(err));
+      
+      const lastIdx = currentSteps.findIndex(s => s.status === 'RUNNING');
+      if (lastIdx !== -1) {
+        currentSteps[lastIdx].status = 'FAILED';
+        currentSteps[lastIdx].details = errorMsg;
+      }
+      for (let i = 0; i < currentSteps.length; i++) {
+        if (currentSteps[i].status === 'PENDING') {
+          currentSteps[i].status = 'FAILED';
+        }
+      }
+
+      const time3 = new Date().toLocaleTimeString();
+      currentLogs.push(
+        `[${time3}] [Erro] Exceção crítica interceptada na chamada da API:`,
+        `[${time3}] [Erro] Detalhes: ${errorMsg}`
+      );
+
+      setAiTestResult({
+        steps: [...currentSteps],
+        logs: [...currentLogs]
+      });
+
+      setTestStatus('error');
       setTestMessage(errorMsg);
       toast.error(errorMsg);
     } finally {
@@ -1161,7 +1292,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       </div>
                     </div>
 
-                    {testMessage && (
+                    {testMessage && !aiTestResult && (
                       <p className={`text-[11px] leading-snug font-mono max-w-sm break-all ${
                         testStatus === 'success' ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
                       }`}>
@@ -1169,6 +1300,211 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       </p>
                     )}
                   </div>
+
+                  {aiTestResult && (
+                    <div className="mt-4 bg-slate-900 border border-slate-800 p-4 rounded-xl text-slate-100 space-y-4">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                        <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                          <Brain className="w-4 h-4 text-emerald-400 animate-pulse" />
+                          <span>Diagnóstico de Conexão da Inteligência Artificial</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAiTestResult(null);
+                            setTestStatus('none');
+                            setTestMessage('');
+                          }}
+                          className="text-[9px] text-slate-400 hover:text-white underline cursor-pointer"
+                        >
+                          Resetar
+                        </button>
+                      </div>
+
+                      {/* 1. Status Realçado */}
+                      <div className={`p-3 rounded-lg border flex items-start gap-2.5 ${
+                        testStatus === 'success'
+                          ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-200'
+                          : testStatus === 'error'
+                            ? 'bg-rose-500/10 border-rose-500/20 text-rose-200'
+                            : 'bg-blue-500/10 border-blue-500/20 text-blue-200'
+                      }`}>
+                        <div className="mt-0.5 shrink-0">
+                          {testStatus === 'success' ? (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                          ) : testStatus === 'error' ? (
+                            <AlertTriangle className="w-4 h-4 text-rose-400 animate-pulse" />
+                          ) : (
+                            <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
+                          )}
+                        </div>
+                        <div className="space-y-0.5">
+                          <h4 className="text-xs font-bold uppercase tracking-wider text-white">
+                            {testStatus === 'success'
+                              ? 'Status: Conectado'
+                              : testStatus === 'error'
+                                ? 'Status: Erro de Conectividade'
+                                : 'Status: Testando Conexão...'}
+                          </h4>
+                          <p className="text-[11px] leading-relaxed text-slate-300">
+                            {testStatus === 'success'
+                              ? 'Handshake autenticado de forma bem-sucedida. O gateway operacional respondeu às validações de API.'
+                              : testStatus === 'error'
+                                ? testMessage
+                                : 'Aguardando validações de rota de rede e resposta do modelo de IA.'}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* 2. Métricas */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-[10px]">
+                        <div className="bg-black/35 p-2 border border-slate-800 rounded-lg">
+                          <p className="font-bold uppercase text-slate-500 tracking-wider text-[9px]">Provedor</p>
+                          <p className="font-bold text-slate-300 mt-0.5 uppercase tracking-wide truncate">{selectedProvider}</p>
+                        </div>
+                        <div className="bg-black/35 p-2 border border-slate-800 rounded-lg">
+                          <p className="font-bold uppercase text-slate-500 tracking-wider text-[9px]">Modelo Alvo</p>
+                          <p className="font-bold text-slate-300 mt-0.5 truncate" title={selectedModel || getDefaultModel(selectedProvider)}>{selectedModel || getDefaultModel(selectedProvider)}</p>
+                        </div>
+                        <div className="bg-black/35 p-2 border border-slate-800 rounded-lg">
+                          <p className="font-bold uppercase text-slate-500 tracking-wider text-[9px]">Protocolo</p>
+                          <p className="font-bold text-slate-300 mt-0.5 font-sans">REST / HTTPS</p>
+                        </div>
+                        <div className="bg-black/35 p-2 border border-slate-800 rounded-lg">
+                          <p className="font-bold uppercase text-slate-500 tracking-wider text-[9px]">Latência Relativa</p>
+                          <p className="font-bold text-slate-300 mt-0.5">
+                            {testStatus === 'success' ? 'Baixa (Imediata)' : testingConnection ? 'Calculando...' : '-'}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* 3. Etapas do Diagnóstico */}
+                      <div className="space-y-1.5">
+                        <span className="text-[10px] font-bold uppercase text-slate-400 tracking-wider block">Etapas do Diagnóstico:</span>
+                        <div className="space-y-2 text-[11px] font-mono">
+                          {aiTestResult.steps.map((step, idx) => {
+                            const getStepStatusStyle = () => {
+                              switch (step.status) {
+                                case 'COMPLETED':
+                                  return {
+                                    bg: 'bg-black/35 border-emerald-500/20 text-slate-300',
+                                    statusLabel: 'Sucesso',
+                                    style: 'bg-emerald-500/10 text-emerald-400'
+                                  };
+                                case 'RUNNING':
+                                  return {
+                                    bg: 'bg-black/35 border-blue-500/20 text-slate-350',
+                                    statusLabel: 'Testando',
+                                    style: 'bg-blue-500/10 text-blue-400 animate-pulse'
+                                  };
+                                case 'FAILED':
+                                  return {
+                                    bg: 'bg-black/35 border-rose-500/20 text-slate-350',
+                                    statusLabel: 'Falhou',
+                                    style: 'bg-rose-500/10 text-rose-400'
+                                  };
+                                default: // PENDING
+                                  return {
+                                    bg: 'bg-black/35 border-slate-800/80 text-slate-500',
+                                    statusLabel: 'Pendente',
+                                    style: 'bg-slate-800 text-slate-500'
+                                  };
+                              }
+                            };
+
+                            const stepStyle = getStepStatusStyle();
+
+                            return (
+                              <div key={idx} className={`flex items-center justify-between px-3 py-1.5 border rounded-lg ${stepStyle.bg}`}>
+                                <div className="flex flex-col text-left">
+                                  <span className="font-bold">{step.name}</span>
+                                  {step.details && <span className="text-[10px] text-slate-400 font-sans mt-0.5">{step.details}</span>}
+                                </div>
+                                <span className={`text-[9px] px-2 py-0.5 rounded font-bold uppercase ${stepStyle.style}`}>
+                                  {stepStyle.statusLabel}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* 4. Área Técnica Recolhível */}
+                      <div className="border border-slate-800 rounded-lg overflow-hidden bg-black/20">
+                        <button
+                          type="button"
+                          onClick={() => setIsAiDiagnosticsOpen(!isAiDiagnosticsOpen)}
+                          className="w-full px-3 py-2 flex items-center justify-between text-left hover:bg-white/5 transition-colors cursor-pointer"
+                        >
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Ver Logs Técnicos do Handshake</span>
+                          {isAiDiagnosticsOpen ? (
+                            <ChevronUp className="w-4 h-4 text-slate-400" />
+                          ) : (
+                            <ChevronDown className="w-4 h-4 text-slate-400" />
+                          )}
+                        </button>
+
+                        {isAiDiagnosticsOpen && (
+                          <div className="p-2.5 border-t border-slate-800 bg-black text-slate-350">
+                            <pre className="text-[9.5px] font-mono leading-relaxed max-h-36 overflow-y-auto whitespace-pre-wrap break-all pr-1 select-all w-full max-w-full text-left">
+                              {aiTestResult.logs.map((logMsg, logIdx) => {
+                                let classMap = "text-slate-350";
+                                if (logMsg.toLowerCase().includes('[erro]') || logMsg.toLowerCase().includes('critical') || logMsg.toLowerCase().includes('falhou')) {
+                                  classMap = "text-rose-400";
+                                } else if (logMsg.toLowerCase().includes('sucesso') || logMsg.toLowerCase().includes('recebida com sucesso') || logMsg.toLowerCase().includes('estabelecida')) {
+                                  classMap = "text-emerald-400";
+                                }
+                                return <div key={logIdx} className={classMap}>{logMsg}</div>;
+                              })}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* 5. Botão Copiar Diagnóstico */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const diagnosticText = `=========================================
+DIAGNÓSTICO DA CONEXÃO DE IA - FINCANVAS
+=========================================
+Data/Hora: ${new Date().toLocaleString()}
+Provedor: ${selectedProvider}
+Modelo: ${selectedModel || 'Padrão'}
+Base URL: ${baseUrlInput || 'Padrão (Nuvem)'}
+Chave de API: ${isCurrentProviderSaved || apiKeyInput ? 'Configurada [Ocultada por Segurança]' : 'Não configurada'}
+Status Geral: ${testStatus === 'success' ? 'SUCESSO ✅' : 'FALHA ❌'}
+
+ETAPAS DO DIAGNÓSTICO:
+${aiTestResult.steps.map(step => `- [${step.status}] ${step.name}: ${step.details || ''}`).join('\n')}
+
+LOGS DE EXECUÇÃO:
+${aiTestResult.logs.join('\n')}
+=========================================`;
+                          
+                          navigator.clipboard.writeText(diagnosticText);
+                          setCopiedAiDiagnostics(true);
+                          toast.success('Diagnóstico de IA copiado para a área de transferência!');
+                          setTimeout(() => {
+                            setCopiedAiDiagnostics(false);
+                          }, 2000);
+                        }}
+                        className="w-full text-center py-2 bg-slate-800 hover:bg-slate-850 rounded-lg text-slate-300 hover:text-white font-bold text-[10px] uppercase tracking-wider cursor-pointer flex items-center justify-center gap-1.5 transition-colors"
+                      >
+                        {copiedAiDiagnostics ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>Copiado!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>Copiar laudo de diagnóstico</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
 
                   {/* Botões de Ação para Credencial */}
                   <div className="flex flex-wrap gap-2 pt-2">

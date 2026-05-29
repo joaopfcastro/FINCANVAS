@@ -2040,7 +2040,8 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         success: true,
         provider,
         model: testModel,
-        message: response.text || "Teste concluído de forma bem-sucedida."
+        providerEcho: response.text || "Sem resposta em texto",
+        message: "Teste de inferência de LLM executado com sucesso. Canal de transporte e chaves operacionais."
       });
     } catch (err: any) {
       const normalized = normalizeAIProviderError(err, provider, model);
