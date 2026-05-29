@@ -58,9 +58,22 @@ export interface AIUserSettings {
   aiAlwaysAskBeforeSending: boolean;
 }
 
-export const fetchAISettings = async (): Promise<AIUserSettings | null> => {
+export const DEFAULT_DISABLED_AI_SETTINGS: AIUserSettings = {
+  aiEnabled: false,
+  provider: 'gemini',
+  model: 'gemini-3.5-flash',
+  baseUrl: '',
+  aiUseForOCR: false,
+  aiUseForCategoryFallback: false,
+  aiUseForInsights: false,
+  aiUseForReports: false,
+  aiAlwaysAskBeforeSending: true,
+};
+
+export const fetchAISettings = async (): Promise<AIUserSettings> => {
   const user = auth.currentUser;
-  if (!user) return null;
+  if (!user) return DEFAULT_DISABLED_AI_SETTINGS;
+
   try {
     const token = await user.getIdToken();
     const result = await apiFetchJson<any>('/api/ai/credentials/status', {
@@ -68,11 +81,16 @@ export const fetchAISettings = async (): Promise<AIUserSettings | null> => {
         'Authorization': `Bearer ${token}`
       }
     });
-    if (result.ok && result.data) {
-      return result.data.settings;
+
+    if (result.ok && result.data?.settings) {
+      return {
+        ...DEFAULT_DISABLED_AI_SETTINGS,
+        ...result.data.settings,
+      };
     }
   } catch (err) {
     console.error('Error fetching AI settings:', err);
   }
-  return null;
+
+  return DEFAULT_DISABLED_AI_SETTINGS;
 };
