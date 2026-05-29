@@ -1430,9 +1430,14 @@ async function runTests() {
     // 4. SettingsView.tsx não copia apiKeyInput no diagnóstico
     assert(!settingsContent.includes("apiKeyInput") || !settingsContent.match(/diagnosticText[\s\S]*apiKeyInput/), "Não deve conter apiKeyInput dentro do bloco de texto copiado no diagnóstico");
 
-    // 5. server.ts retorna providerEcho separado de message no endpoint /api/ai/credentials/test
+    // 5. server.ts retorna providerEcho separado de message no endpoint /api/ai/credentials/test e limita a 500 caracteres
     assert(serverContent.includes("providerEcho:"), "server.ts deve conter o campo providerEcho no retorno de test");
+    assert(serverContent.includes("slice(0, 500)"), "server.ts deve conter o slice(0, 500) no providerEcho para evitar mensagens excessivamente longas");
     assert(serverContent.includes("message:"), "server.ts deve retornar message separada no test");
+
+    // 5.1 SettingsView.tsx contém safeProviderEcho com limite de 500 e o utiliza
+    assert(settingsContent.includes("safeProviderEcho"), "SettingsView.tsx deve conter a constante safeProviderEcho");
+    assert(settingsContent.includes(".slice(0, 500)"), "SettingsView.tsx deve truncar safeProviderEcho a no máximo 500 caracteres");
 
     // 6. server.ts não usa response.text como message principal no sucesso do teste
     // O sucesso do teste deve retornar uma mensagem amigável separada de response.text

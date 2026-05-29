@@ -512,6 +512,8 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
 
       currentSteps[2] = { name: "Autenticação e Handshake", status: res.ok && res.data?.success ? "COMPLETED" : "FAILED", details: res.ok && res.data?.success ? "Handshake autenticado com sucesso!" : "Autenticação do provedor falhou." };
 
+      const safeProviderEcho = String(res.data?.providerEcho || res.data?.message || res.message || '').slice(0, 500);
+
       if (res.ok && res.data?.success) {
         currentSteps[3] = { name: "Chamada de Inferência (Eco)", status: "COMPLETED", details: "Resposta do modelo recebida e validada com êxito." };
 
@@ -519,7 +521,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         currentLogs.push(
           `[${time3}] [Auth] Credencial validada com sucesso pelo provedor ${providerName}.`,
           `[${time3}] [Inference] Solicitação leve de inferência de LLM realizada com sucesso.`,
-          `[${time3}] [Echo] Resposta recebida da IA: "${res.data.providerEcho || res.data.message}"`
+          `[${time3}] [Echo] Resposta recebida da IA: "${safeProviderEcho}"`
         );
 
         setAiTestResult({
@@ -530,7 +532,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
           model: testModel,
           checkedAt: new Date().toISOString(),
           rawMessage: res.data?.message || "Conexão testada com sucesso!",
-          providerEcho: res.data?.providerEcho,
+          providerEcho: safeProviderEcho,
           steps: [...currentSteps],
           logs: [...currentLogs]
         });
@@ -577,7 +579,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
           code: code,
           checkedAt: new Date().toISOString(),
           rawMessage: res.data?.message || res.message,
-          providerEcho: res.data?.providerEcho,
+          providerEcho: safeProviderEcho,
           steps: [...currentSteps],
           logs: [...currentLogs]
         });

@@ -2040,7 +2040,7 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         success: true,
         provider,
         model: testModel,
-        providerEcho: response.text || "Sem resposta em texto",
+        providerEcho: response.text ? response.text.slice(0, 500) : "Sem resposta em texto",
         message: "Teste de inferência de LLM executado com sucesso. Canal de transporte e chaves operacionais."
       });
     } catch (err: any) {
