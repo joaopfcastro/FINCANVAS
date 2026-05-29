@@ -1384,7 +1384,7 @@ async function runTests() {
           return parsed;
         }
       }
-      return 15000;
+      return 30000;
     }
 
     // A. Válido e dentro da faixa
@@ -1393,12 +1393,12 @@ async function runTests() {
     assert(customParseAIProviderTestTimeoutMs("60000") === 60000, "Máximo 60000 ms é válido");
 
     // B. Fora da faixa ou inválido
-    assert(customParseAIProviderTestTimeoutMs("2999") === 15000, "Menor que 3000 ms deve cair no padrão 15000");
-    assert(customParseAIProviderTestTimeoutMs("60001") === 15000, "Maior que 60000 ms deve cair no padrão 15000");
-    assert(customParseAIProviderTestTimeoutMs("-5000") === 15000, "Negativo deve cair no padrão 15000");
-    assert(customParseAIProviderTestTimeoutMs("abc") === 15000, "String não-numérica deve cair no padrão 15000");
-    assert(customParseAIProviderTestTimeoutMs("") === 15000, "String vazia deve cair no padrão 15000");
-    assert(customParseAIProviderTestTimeoutMs(undefined) === 15000, "Undefined deve cair no padrão 15000");
+    assert(customParseAIProviderTestTimeoutMs("2999") === 30000, "Menor que 3000 ms deve cair no padrão 30000");
+    assert(customParseAIProviderTestTimeoutMs("60001") === 30000, "Maior que 60000 ms deve cair no padrão 30000");
+    assert(customParseAIProviderTestTimeoutMs("-5000") === 30000, "Negativo deve cair no padrão 30000");
+    assert(customParseAIProviderTestTimeoutMs("abc") === 30000, "String não-numérica deve cair no padrão 30000");
+    assert(customParseAIProviderTestTimeoutMs("") === 30000, "String vazia deve cair no padrão 30000");
+    assert(customParseAIProviderTestTimeoutMs(undefined) === 30000, "Undefined deve cair no padrão 30000");
 
     console.log("✅ PASSED: Teste 33 concluído com sucesso.");
     passed++;
@@ -1447,6 +1447,32 @@ async function runTests() {
     passed++;
   } catch (err: any) {
     console.error("Erro no teste 34:", err);
+    failed++;
+  }
+
+  // 35. Teste de Validação Estrutural do Fallback Simulado de IA (Fase 10)
+  try {
+    console.log("=== INICIANDO TESTE 35: VALIDAÇÃO ESTRUTURAL DO FALLBACK SIMULADO (FASE 10) ===");
+
+    const serverContent = fs.readFileSync('./server.ts', 'utf8');
+
+    // A. Deve verificar o flag de simulação
+    assert(serverContent.includes("ENABLE_SIMULATED_AI_FALLBACK === \"true\"") || serverContent.includes("isSimulatedFallbackEnabled"), "Deve verificar se o fallback simulado está ativo pelo flag correspondente");
+
+    // B. Deve bloquear o fallback simulado em ambiente de produção
+    assert(serverContent.includes('!== "production"') || serverContent.includes('!== \'production\''), "Deve restringir o fallback simulado para ambientes que não sejam de produção");
+
+    // C. Deve filtrar estritamente por erros de timeout e indisponibilidade
+    assert(serverContent.includes("AI_PROVIDER_TIMEOUT") && serverContent.includes("AI_PROVIDER_UNREACHABLE"), "O fallback simulado de conexão deve aceitar erros de timeout e unreachable");
+
+    // D. Deve retornar simulated: true e o código apropriado
+    assert(serverContent.includes("simulated: true"), "O retorno do fallback simulado deve definir simulated: true");
+    assert(serverContent.includes("AI_TEST_SIMULATED"), "O retorno do fallback simulado deve possuir o código de status AI_TEST_SIMULATED");
+
+    console.log("✅ PASSED: Teste 35 concluído com sucesso.");
+    passed++;
+  } catch (err: any) {
+    console.error("Erro no teste 35:", err);
     failed++;
   }
 

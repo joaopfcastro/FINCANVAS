@@ -68,6 +68,7 @@ export interface AITestResult {
   provider?: string;
   model?: string;
   code?: string;
+  simulated?: boolean;
   checkedAt?: string;
   providerEcho?: string;
   rawMessage?: string;
@@ -517,6 +518,9 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
       if (res.ok && res.data?.success) {
         currentSteps[3] = { name: "Chamada de Inferência (Eco)", status: "COMPLETED", details: "Resposta do modelo recebida e validada com êxito." };
 
+        const isSimulated = res.data?.simulated === true || res.data?.code === 'AI_TEST_SIMULATED';
+        const finalCode = isSimulated ? 'AI_TEST_SIMULATED' : undefined;
+
         const time3 = new Date().toLocaleTimeString();
         currentLogs.push(
           `[${time3}] [Auth] Credencial validada com sucesso pelo provedor ${providerName}.`,
@@ -526,10 +530,14 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
 
         setAiTestResult({
           status: 'success',
-          title: 'Conexão validada com sucesso',
-          summary: 'O provedor respondeu corretamente e está pronto para uso no FINCANVAS.',
+          title: isSimulated ? 'Conexão Simulada' : 'Conexão validada com sucesso',
+          summary: isSimulated 
+            ? 'Teste simulado — não valida a chave real do provedor.' 
+            : 'O provedor respondeu corretamente e está pronto para uso no FINCANVAS.',
           provider: selectedProvider,
           model: testModel,
+          code: finalCode,
+          simulated: isSimulated,
           checkedAt: new Date().toISOString(),
           rawMessage: res.data?.message || "Conexão testada com sucesso!",
           providerEcho: safeProviderEcho,
@@ -538,8 +546,8 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         });
 
         setTestStatus('success');
-        setTestMessage(res.data.message || "Conexão testada com sucesso!");
-        toast.success("Teste de conexão bem-sucedido!");
+        setTestMessage(isSimulated ? "Teste simulado — não valida a chave real do provedor." : (res.data.message || "Conexão testada com sucesso!"));
+        toast.success(isSimulated ? "Teste de conexão simulada executado!" : "Teste de conexão bem-sucedido!");
       } else {
         const code = res.data?.code;
         let finalMsg = res.data?.message || res.message || "Erro ao testar conexão.";
@@ -1356,14 +1364,20 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       {/* 1. Status Realçado */}
                       <div className={`p-3 rounded-lg border flex items-start gap-2.5 ${
                         aiTestResult.status === 'success'
-                          ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-200'
+                          ? aiTestResult.simulated
+                            ? 'bg-amber-500/10 border-amber-500/20 text-amber-200'
+                            : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-200'
                           : aiTestResult.status === 'error'
                             ? 'bg-rose-500/10 border-rose-500/20 text-rose-200'
                             : 'bg-blue-500/10 border-blue-500/20 text-blue-200'
                       }`}>
                         <div className="mt-0.5 shrink-0">
                           {aiTestResult.status === 'success' ? (
-                            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                            aiTestResult.simulated ? (
+                              <AlertTriangle className="w-4 h-4 text-amber-400" />
+                            ) : (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                            )
                           ) : aiTestResult.status === 'error' ? (
                             <AlertTriangle className="w-4 h-4 text-rose-400 animate-pulse" />
                           ) : (

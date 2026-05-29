@@ -2056,14 +2056,20 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       }
 
       // If simulated fallback mode is enabled, intercept timeouts or connection issues of real APIs and succeed gracefully as mock!
-      if (process.env.ENABLE_SIMULATED_AI_FALLBACK === "true") {
+      const isDevOrSandbox = process.env.NODE_ENV !== "production";
+      const isSimulatedFallbackEnabled = process.env.ENABLE_SIMULATED_AI_FALLBACK === "true";
+      const isEligibleErrorCode = normalized.code === "AI_PROVIDER_TIMEOUT" || normalized.code === "AI_PROVIDER_UNREACHABLE";
+
+      if (isSimulatedFallbackEnabled && isDevOrSandbox && isEligibleErrorCode) {
         console.log(`[Simulated Fallback] Interceptado erro '${normalized.code}' no teste de conexão de IA. Fornecendo resposta simulada.`);
         return res.json({
           success: true,
+          simulated: true,
+          code: "AI_TEST_SIMULATED",
           provider,
           model: testModel,
           providerEcho: `[Simulação] Resposta de teste de inferência de LLM simulada, recebida via mock-up de canais de transporte fins para provedor ${provider}.`,
-          message: "Teste de inferência de LLM simulado executado com sucesso através do Fallback de Simulação."
+          message: "Teste simulado executado com sucesso. Atenção: este resultado não valida a chave real do provedor."
         });
       }
 
