@@ -1552,12 +1552,12 @@ ${aiTestResult.rawMessage || 'Nenhuma'}
                   )}
 
                   {/* Botões de Ação para Credencial */}
-                  <div className="flex flex-wrap gap-2 pt-2">
+                  <div className="flex flex-col sm:flex-row gap-2 pt-2">
                     <button
                       type="button"
                       onClick={handleSaveCredential}
                       disabled={isFormDisabled}
-                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                      className="w-full sm:w-auto px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5"
                     >
                       {savingAiSettings ? (
                         <>
@@ -1573,7 +1573,7 @@ ${aiTestResult.rawMessage || 'Nenhuma'}
                       type="button"
                       onClick={handleTestConnection}
                       disabled={testingConnection || isFormDisabled}
-                      className="px-4 py-2 bg-white dark:bg-slate-700 hover:bg-slate-50 dark:hover:bg-slate-600 disabled:opacity-50 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600 text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                      className="w-full sm:w-auto px-4 py-2 bg-white dark:bg-slate-700 hover:bg-slate-50 dark:hover:bg-slate-600 disabled:opacity-50 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600 text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5"
                     >
                       {testingConnection ? (
                         <>
@@ -1590,7 +1590,7 @@ ${aiTestResult.rawMessage || 'Nenhuma'}
                         type="button"
                         onClick={handleRemoveCredential}
                         disabled={isFormDisabled}
-                        className="px-4 py-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-955/20 dark:hover:bg-rose-900/20 text-rose-600 dark:text-rose-404 text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 ml-auto"
+                        className="w-full sm:w-auto px-4 py-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-955/20 dark:hover:bg-rose-900/20 text-rose-600 dark:text-rose-404 text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 sm:ml-auto"
                       >
                         Remover credencial
                       </button>
