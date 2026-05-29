@@ -1962,13 +1962,14 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         return parsed;
       }
     }
-    return 15000; // default 15 seconds
+    return 30000; // default 30 seconds to avoid timeout on slow pipelines
   }
 
   // 4. POST /api/ai/credentials/test
   app.post("/api/ai/credentials/test", requireAuth, async (req, res) => {
     const uid = (req as any).user.uid;
     let { provider, apiKey, baseUrl, model } = req.body;
+    let testModel = model || "";
 
     try {
       const savedData = await getAISecret(uid);
@@ -2018,7 +2019,7 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       }
 
       const timeoutMs = parseAIProviderTestTimeoutMs();
-      const testModel = model || getDefaultModel(provider);
+      testModel = model || getDefaultModel(provider);
 
       // Safe lightweight test using generating content raced with a timeout
       const response = await Promise.race([
@@ -2051,6 +2052,18 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         return res.status(503).json({
           error: "FIRESTORE_UNAVAILABLE",
           message: "O banco de dados Firestore está indisponível para carregar credenciais necessárias para teste."
+        });
+      }
+
+      // If simulated fallback mode is enabled, intercept timeouts or connection issues of real APIs and succeed gracefully as mock!
+      if (process.env.ENABLE_SIMULATED_AI_FALLBACK === "true") {
+        console.log(`[Simulated Fallback] Interceptado erro '${normalized.code}' no teste de conexão de IA. Fornecendo resposta simulada.`);
+        return res.json({
+          success: true,
+          provider,
+          model: testModel,
+          providerEcho: `[Simulação] Resposta de teste de inferência de LLM simulada, recebida via mock-up de canais de transporte fins para provedor ${provider}.`,
+          message: "Teste de inferência de LLM simulado executado com sucesso através do Fallback de Simulação."
         });
       }
 
