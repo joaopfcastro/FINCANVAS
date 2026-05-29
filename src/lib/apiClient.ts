@@ -16,11 +16,45 @@ export interface ApiResult<T> {
   rawError?: unknown;
 }
 
+function isRelativeApiRequest(input: string): boolean {
+  return input === '/api' || input.startsWith('/api/');
+}
+
+function isKnownFrontendOnlyPreviewHost(): boolean {
+  if (typeof window === 'undefined') return false;
+
+  const location = window.location;
+  const hostname = location?.hostname?.toLowerCase() || '';
+  const pathname = location?.pathname?.toLowerCase() || '';
+
+  return (
+    hostname === 'aistudio.google.com' ||
+    hostname.endsWith('.aistudio.googleusercontent.com') ||
+    (hostname.includes('aistudio') && pathname.startsWith('/apps/'))
+  );
+}
+
+function shouldSkipBackendRequest(input: string): boolean {
+  return isRelativeApiRequest(input) && isKnownFrontendOnlyPreviewHost();
+}
+
+function getApiUnavailableMessage(): string {
+  return 'API do FINCANVAS indisponível neste ambiente de preview. Rode npm run dev ou publique o backend Express para usar esta função.';
+}
+
 export async function apiFetchJson<T>(
   input: string,
   init?: RequestInit,
   options?: { timeoutMs?: number }
 ): Promise<ApiResult<T>> {
+  if (shouldSkipBackendRequest(input)) {
+    return {
+      ok: false,
+      code: 'API_UNAVAILABLE',
+      message: getApiUnavailableMessage(),
+    };
+  }
+
   const timeoutMs = options?.timeoutMs ?? 10000;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -112,7 +146,7 @@ export async function apiFetchJson<T>(
       return {
         ok: false,
         code: 'API_UNAVAILABLE',
-        message: 'API do FINCANVAS indisponível neste ambiente. Rode npm run dev ou publique o backend Express para usar esta função.',
+        message: getApiUnavailableMessage(),
         rawError: error,
       };
     }
