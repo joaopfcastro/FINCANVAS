@@ -609,3 +609,115 @@ export async function callOpenCodeAPI(options: {
     throw new Error('OPENCODE_API_RESPONSE_UNSUPPORTED');
   }
 }
+
+export function normalizeAIProviderError(
+  error: unknown,
+  provider: AIProvider,
+  model?: string
+): { code: string; message: string; provider: AIProvider; model?: string } {
+  const errMsg = error instanceof Error ? error.message : String(error);
+  const normalizedMsg = errMsg.toLowerCase();
+
+  // 1. Timeout
+  if (errMsg === 'AI_PROVIDER_TIMEOUT' || normalizedMsg.includes('timeout') || normalizedMsg.includes('deadline')) {
+    return {
+      code: 'AI_PROVIDER_TIMEOUT',
+      message: 'O provedor de IA demorou demais para responder. Tente novamente ou aumente AI_PROVIDER_TEST_TIMEOUT_MS no ambiente do servidor.',
+      provider,
+      model
+    };
+  }
+
+  // 2. Gemini NOT_FOUND
+  if (
+    normalizedMsg.includes('5 not_found') ||
+    normalizedMsg.includes('not_found') ||
+    normalizedMsg.includes('notfound') ||
+    normalizedMsg.includes('not found') ||
+    normalizedMsg.includes('modelo gemini informado não foi encontrado')
+  ) {
+    return {
+      code: 'AI_MODEL_NOT_FOUND',
+      message: 'O modelo Gemini informado não foi encontrado ou não está disponível para esta chave/projeto. Verifique o modelo no Google AI Studio ou tente outro modelo compatível.',
+      provider,
+      model
+    };
+  }
+
+  // 3. API key inválida / auth
+  if (
+    normalizedMsg.includes('api_key_invalid') ||
+    normalizedMsg.includes('invalid-key') ||
+    normalizedMsg.includes('invalid_api_key') ||
+    normalizedMsg.includes('api key not valid') ||
+    normalizedMsg.includes('unauthorized') ||
+    normalizedMsg.includes('401') ||
+    normalizedMsg.includes('auth') ||
+    normalizedMsg.includes('key is invalid')
+  ) {
+    return {
+      code: 'AI_AUTH_INVALID',
+      message: 'A chave de API é inválida, expirou, foi revogada ou não tem permissão para este provedor.',
+      provider,
+      model
+    };
+  }
+
+  // 4. Quota ou billing
+  if (
+    normalizedMsg.includes('resource_exhausted') ||
+    normalizedMsg.includes('quota') ||
+    normalizedMsg.includes('billing') ||
+    normalizedMsg.includes('credit') ||
+    normalizedMsg.includes('insufficient_quota') ||
+    normalizedMsg.includes('limit exceeded') ||
+    normalizedMsg.includes('403')
+  ) {
+    return {
+      code: 'AI_QUOTA_OR_BILLING',
+      message: 'O provedor recusou a requisição por cota, billing ou limite de uso.',
+      provider,
+      model
+    };
+  }
+
+  // 5. Rate limit
+  if (
+    normalizedMsg.includes('rate_limit_exceeded') ||
+    normalizedMsg.includes('rate limit') ||
+    normalizedMsg.includes('too many requests') ||
+    normalizedMsg.includes('429')
+  ) {
+    return {
+      code: 'AI_RATE_LIMITED',
+      message: 'O provedor limitou temporariamente as requisições. Aguarde alguns minutos e tente novamente.',
+      provider,
+      model
+    };
+  }
+
+  // 6. Rede / inacessível
+  if (
+    normalizedMsg.includes('fetch failed') ||
+    normalizedMsg.includes('enotfound') ||
+    normalizedMsg.includes('econnreset') ||
+    normalizedMsg.includes('network') ||
+    normalizedMsg.includes('econnrefused') ||
+    normalizedMsg.includes('connect')
+  ) {
+    return {
+      code: 'AI_PROVIDER_UNREACHABLE',
+      message: 'Não foi possível alcançar o provedor de IA. Verifique a conexão, a Base URL ou tente novamente.',
+      provider,
+      model
+    };
+  }
+
+  // 7. Fallback desconhecido
+  return {
+    code: 'AI_UNKNOWN_PROVIDER_ERROR',
+    message: errMsg || 'O provedor de IA retornou um erro inesperado durante o teste.',
+    provider,
+    model
+  };
+}

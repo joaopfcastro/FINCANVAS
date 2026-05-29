@@ -1328,6 +1328,48 @@ async function runTests() {
     failed++;
   }
 
+  // 32. Teste de Normalização de Erros de IA (Fase 8)
+  try {
+    console.log("=== INICIANDO TESTE 32: NORMALIZAÇÃO DE ERROS DE IA (FASE 8) ===");
+    
+    const { normalizeAIProviderError } = await import('./src/lib/ai/aiGateway.js');
+
+    // A. Gemini NOT_FOUND -> AI_MODEL_NOT_FOUND
+    const errNotFound1 = normalizeAIProviderError(new Error("5 NOT_FOUND: model not found"), "gemini", "gemini-1.5-pro");
+    assert(errNotFound1.code === "AI_MODEL_NOT_FOUND", "Gemini 5 NOT_FOUND deve virar AI_MODEL_NOT_FOUND");
+    assert(errNotFound1.message.includes("Google AI Studio"), "Gemini NOT_FOUND deve conter orientação adequada");
+
+    // B. Invalid API key -> AI_AUTH_INVALID
+    const errAuth = normalizeAIProviderError(new Error("API_KEY_INVALID: key invalid"), "gemini", "gemini-1.5-pro");
+    assert(errAuth.code === "AI_AUTH_INVALID", "API_KEY_INVALID deve virar AI_AUTH_INVALID");
+
+    // C. Quota / billing -> AI_QUOTA_OR_BILLING
+    const errQuota = normalizeAIProviderError(new Error("RESOURCE_EXHAUSTED: quota exceeded"), "gemini", "gemini-1.5-pro");
+    assert(errQuota.code === "AI_QUOTA_OR_BILLING", "RESOURCE_EXHAUSTED deve virar AI_QUOTA_OR_BILLING");
+
+    // D. Rate limit -> AI_RATE_LIMITED
+    const errRate = normalizeAIProviderError(new Error("Too many requests (429) rate limit"), "openai", "gpt-4");
+    assert(errRate.code === "AI_RATE_LIMITED", "429 deve virar AI_RATE_LIMITED");
+
+    // E. Timeout -> AI_PROVIDER_TIMEOUT
+    const errTimeout = normalizeAIProviderError(new Error("AI_PROVIDER_TIMEOUT"), "gemini", "gemini-1.5-pro");
+    assert(errTimeout.code === "AI_PROVIDER_TIMEOUT", "AI_PROVIDER_TIMEOUT deve virar AI_PROVIDER_TIMEOUT");
+
+    // F. Network failure -> AI_PROVIDER_UNREACHABLE
+    const errNetwork = normalizeAIProviderError(new Error("fetch failed"), "openai", "gpt-4");
+    assert(errNetwork.code === "AI_PROVIDER_UNREACHABLE", "fetch failed deve virar AI_PROVIDER_UNREACHABLE");
+
+    // G. Unknown error -> AI_UNKNOWN_PROVIDER_ERROR
+    const errUnknown = normalizeAIProviderError(new Error("Some totally weird error"), "gemini", "gemini-1.5-pro");
+    assert(errUnknown.code === "AI_UNKNOWN_PROVIDER_ERROR", "Erro desconhecido deve virar AI_UNKNOWN_PROVIDER_ERROR");
+
+    console.log("✅ PASSED: Teste 32 concluído com sucesso.");
+    passed++;
+  } catch (err: any) {
+    console.error("Erro no teste 32:", err);
+    failed++;
+  }
+
   console.log(`\n=== RESULTADO DOS TESTES: ${passed} Passaram | ${failed} Falharam ===`);
   if (failed > 0) {
     process.exit(1);

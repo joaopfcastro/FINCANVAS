@@ -131,10 +131,13 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
       try {
         setLoadingStatus(true);
         
+        let isDbDisconnected = false;
+
         // 1. Verificar disponibilidade da API (Health check)
         const healthRes = await apiFetchJson<{ ok: boolean, database?: string }>('/api/health');
         if (!healthRes.ok) {
           if (healthRes.status === 503 && healthRes.data?.database === "DISCONNECTED") {
+            isDbDisconnected = true;
             if (active) {
               setApiAvailable(true); // server is active, but db is down
               setDbStatus('DISCONNECTED');
@@ -151,6 +154,13 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
             setApiAvailable(true);
             setDbStatus('CONNECTED');
           }
+        }
+
+        if (isDbDisconnected) {
+          if (active) {
+            setLoadingStatus(false);
+          }
+          return;
         }
 
         // 2. Carrega credenciais
@@ -402,14 +412,36 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         setTestMessage(res.data.message || "Conexão testada com sucesso!");
         toast.success("Teste de conexão bem-sucedido!");
       } else {
+        const code = res.data?.code;
+        let finalMsg = res.data?.message || res.message || "Erro ao testar conexão.";
+
+        if (code === "AI_MODEL_NOT_FOUND") {
+          finalMsg = "O modelo de IA informado não foi encontrado ou não está disponível para esta chave/projeto. Por favor, tente selecionar outro modelo compatível ou verifique a disponibilidade no painel do provedor (como o Google AI Studio).";
+        } else if (code === "AI_AUTH_INVALID") {
+          finalMsg = "A chave de API fornecida é inválida, expirou ou foi revogada. Por favor, confira a chave e tente novamente.";
+        } else if (code === "AI_QUOTA_OR_BILLING") {
+          finalMsg = "O provedor recusou a requisição devido ao limite de cota, faturamento (billing) ou limite de créditos excedido. Verifique o status da sua conta no provedor.";
+        } else if (code === "AI_RATE_LIMITED") {
+          finalMsg = "Limite de requisições excedido temporariamente. Aguarde alguns minutos antes de realizar um novo teste.";
+        } else if (code === "AI_PROVIDER_TIMEOUT") {
+          finalMsg = "Tempo esgotado ao tentar alcançar o provedor. Tente novamente ou aumente o tempo limite na configuração AI_PROVIDER_TEST_TIMEOUT_MS.";
+        } else if (code === "AI_PROVIDER_UNREACHABLE") {
+          finalMsg = "Não foi possível conectar ao servidor do provedor de IA. Verifique sua rede de internet ou a Base URL fornecida.";
+        } else if (code === "AI_CREDENTIALS_MISSING") {
+          finalMsg = "Nenhuma credencial de IA foi configurada para teste.";
+        } else if (code === "AI_PROVIDER_INVALID") {
+          finalMsg = "Provedor de IA inválido selecionado.";
+        }
+
         setTestStatus('error');
-        setTestMessage(res.message || res.data?.message || "Erro ao testar conexão.");
-        toast.error("Erro no teste de conexão.");
+        setTestMessage(finalMsg);
+        toast.error(finalMsg);
       }
     } catch (err: any) {
       setTestStatus('error');
-      setTestMessage(err.message || "Erro ao testar conexão.");
-      toast.error("Erro ao testar conexão: " + err.message);
+      const errorMsg = "Erro ao testar a conexão: " + (err.message || String(err));
+      setTestMessage(errorMsg);
+      toast.error(errorMsg);
     } finally {
       setTestingConnection(false);
     }
@@ -929,9 +961,8 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <CloudCog className="w-5 h-5 shrink-0 mt-0.5 animate-pulse text-amber-500" />
                     <div className="text-xs space-y-1">
                       <p className="font-bold">⚠️ Banco de dados do Firestore indisponível no momento.</p>
-                      <p className="leading-relaxed">
-                        O servidor FINCANVAS está operacional, mas o banco de dados do Google Firestore não pôde ser contatado.
-                        As chaves e preferências de Inteligência Artificial não podem ser carregadas, salvas ou testadas no momento.
+                      <p className="leading-relaxed text-xs">
+                        Backend online, mas Firestore Admin indisponível. Configure <code className="bg-amber-100 dark:bg-amber-950/40 px-1 font-mono rounded">FIREBASE_SERVICE_ACCOUNT_JSON</code> ou <code className="bg-amber-100 dark:bg-amber-950/40 px-1 font-mono rounded">GOOGLE_APPLICATION_CREDENTIALS</code> no ambiente do servidor.
                       </p>
                     </div>
                   </div>
@@ -1202,7 +1233,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <ToggleSwitch
                       checked={aiSettings.aiUseForOCR}
                       onChange={(checked) => handleTogglePermission('aiUseForOCR', checked)}
-                      disabled={savingAiSettings || loadingStatus || !apiAvailable || !aiSettings.aiEnabled}
+                      disabled={isFormDisabled || !aiSettings.aiEnabled}
                       label="Usar IA para OCR de recibos/imagens"
                       description="Leitura inteligente de cupons fiscais e faturas anexadas."
                     />
@@ -1213,7 +1244,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <ToggleSwitch
                       checked={aiSettings.aiUseForCategoryFallback}
                       onChange={(checked) => handleTogglePermission('aiUseForCategoryFallback', checked)}
-                      disabled={savingAiSettings || loadingStatus || !apiAvailable || !aiSettings.aiEnabled}
+                      disabled={isFormDisabled || !aiSettings.aiEnabled}
                       label="Usar IA para fallback de categorias incertas"
                       description="Sugerir e categorizar transações não identificadas localmente."
                     />
@@ -1224,7 +1255,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <ToggleSwitch
                       checked={aiSettings.aiUseForInsights}
                       onChange={(checked) => handleTogglePermission('aiUseForInsights', checked)}
-                      disabled={savingAiSettings || loadingStatus || !apiAvailable || !aiSettings.aiEnabled}
+                      disabled={isFormDisabled || !aiSettings.aiEnabled}
                       label="Usar IA para insights no dashboard"
                       description="Alertas e recomendações comportamentais dinâmicas na tela inicial."
                     />
@@ -1235,7 +1266,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <ToggleSwitch
                       checked={aiSettings.aiUseForReports}
                       onChange={(checked) => handleTogglePermission('aiUseForReports', checked)}
-                      disabled={savingAiSettings || loadingStatus || !apiAvailable || !aiSettings.aiEnabled}
+                      disabled={isFormDisabled || !aiSettings.aiEnabled}
                       label="Usar IA para relatórios/mentoria financeira"
                       description="Elaboração de diagnósticos complexos e mentoria financeira nas análises de histórico."
                     />
@@ -1246,7 +1277,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <ToggleSwitch
                       checked={aiSettings.aiAlwaysAskBeforeSending}
                       onChange={(checked) => handleTogglePermission('aiAlwaysAskBeforeSending', checked)}
-                      disabled={savingAiSettings || loadingStatus || !apiAvailable || !aiSettings.aiEnabled}
+                      disabled={isFormDisabled || !aiSettings.aiEnabled}
                       label="Sempre pedir confirmação antes de enviar dados para IA"
                       description="Exibir aviso de consentimento detalhado antes de cada disparo à API externa."
                     />

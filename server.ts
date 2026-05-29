@@ -34,7 +34,7 @@ import {
   isLocalBaseUrl, 
   validateProviderConnectionConfig 
 } from "./src/lib/ai/providerRegistry";
-import { generateAIContent } from "./src/lib/ai/aiGateway";
+import { generateAIContent, normalizeAIProviderError } from "./src/lib/ai/aiGateway";
 import {
   getAISecret,
   saveAISecret,
@@ -94,13 +94,25 @@ function initFirebaseAdmin() {
 initFirebaseAdmin();
 const db = admin.firestore();
 
-// Light test query to verify connection to Firestore database
+let lastFirestoreStatus: boolean | null = null;
+let lastFirestoreCheckTime = 0;
+
+// Light test query to verify connection to Firestore database with a 15-second Cache
 async function checkFirestoreReady(): Promise<boolean> {
+  const now = Date.now();
+  if (lastFirestoreStatus !== null && (now - lastFirestoreCheckTime) < 15000) {
+    return lastFirestoreStatus;
+  }
+
   try {
     await db.collection("users").limit(1).get();
+    lastFirestoreStatus = true;
+    lastFirestoreCheckTime = now;
     return true;
   } catch (err: any) {
     console.error("[Firestore Health Check Failed]:", err.message);
+    lastFirestoreStatus = false;
+    lastFirestoreCheckTime = now;
     return false;
   }
 }
@@ -1812,7 +1824,8 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       if (err.message === "FIRESTORE_UNAVAILABLE") {
         return res.status(503).json({ error: "FIRESTORE_UNAVAILABLE", message: "O repositório do Firestore está indisponível." });
       }
-      return res.status(505).json({ error: "Erro interno no servidor de IA.", details: err.message });
+      const details = process.env.NODE_ENV !== "production" ? err.message : undefined;
+      return res.status(500).json({ error: "Erro interno no servidor de IA.", ...(details && { details }) });
     }
   });
 
@@ -1923,6 +1936,17 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
     }
   });
 
+  function parseAIProviderTestTimeoutMs(): number {
+    const envVal = process.env.AI_PROVIDER_TEST_TIMEOUT_MS;
+    if (envVal) {
+      const parsed = parseInt(envVal, 10);
+      if (!isNaN(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+    return 15000; // default 15 seconds
+  }
+
   // 4. POST /api/ai/credentials/test
   app.post("/api/ai/credentials/test", requireAuth, async (req, res) => {
     const uid = (req as any).user.uid;
@@ -1933,7 +1957,11 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
 
       if (!provider) {
         if (!savedData) {
-          return res.status(400).json({ error: "Nenhuma credencial de IA configurada para teste." });
+          return res.status(400).json({
+            success: false,
+            code: "AI_CREDENTIALS_MISSING",
+            message: "Nenhuma credencial de IA configurada para teste."
+          });
         }
         provider = savedData.provider;
         apiKey = savedData.apiKey;
@@ -1943,6 +1971,15 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         if (!apiKey && savedData && savedData.provider === provider) {
           apiKey = savedData.apiKey;
         }
+      }
+
+      // Check if provider is valid
+      if (!isValidProvider(provider)) {
+        return res.json({
+          success: false,
+          code: "AI_PROVIDER_INVALID",
+          message: "Provedor de IA inválido."
+        });
       }
 
       const validation = validateProviderConnectionConfig(
@@ -1955,49 +1992,55 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       if (!validation.isValid) {
         return res.json({
           success: false,
+          code: "AI_CREDENTIALS_INVALID",
           provider,
           model,
           message: validation.error || "Validação da configuração de conexão falhou."
         });
       }
 
-      // Safe lightweight test using generating content
-      const response = await generateAIContent({
-        provider,
-        apiKey,
-        baseUrl,
-        model: model || getDefaultModel(provider),
-        task: "general",
-        contents: "Teste de conexão de API para FINCANVAS. Responda simulando canal operacional.",
-        config: { temperature: 0.1 }
-      });
+      const timeoutMs = parseAIProviderTestTimeoutMs();
+      const testModel = model || getDefaultModel(provider);
+
+      // Safe lightweight test using generating content raced with a timeout
+      const response = await Promise.race([
+        generateAIContent({
+          provider,
+          apiKey,
+          baseUrl,
+          model: testModel,
+          task: "general",
+          contents: "Teste de conexão de API para FINCANVAS. Responda simulando canal operacional.",
+          config: { temperature: 0.1 }
+        }),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error("AI_PROVIDER_TIMEOUT")), timeoutMs)
+        )
+      ]);
 
       return res.json({
         success: true,
         provider,
-        model: model || getDefaultModel(provider),
+        model: testModel,
         message: response.text || "Teste concluído de forma bem-sucedida."
       });
     } catch (err: any) {
       console.error("[POST /api/ai/credentials/test error]:", err.message);
-      
-      let mappedErr = err.message || String(err);
-      
-      if (mappedErr.includes("5 NOT_FOUND") || mappedErr.includes("notFound") || mappedErr.includes("NOT_FOUND")) {
-        mappedErr = "Chave de API ou recurso não encontrado (Gemini return: 5 NOT_FOUND). Verifique se o modelo selecionado está disponível e se sua API key possui as permissões corretas.";
-      } else if (mappedErr.includes("API_KEY_INVALID") || mappedErr.includes("invalid-key") || mappedErr.includes("INVALID_API_KEY") || mappedErr.includes("API key not valid")) {
-        mappedErr = "Chave de API inválida ou expirada.";
-      }
 
       if (err.message === "FIRESTORE_UNAVAILABLE") {
-        return res.status(503).json({ error: "FIRESTORE_UNAVAILABLE", message: "O banco de dados Firestore está indisponível para carregar credenciais necessárias para teste." });
+        return res.status(503).json({
+          error: "FIRESTORE_UNAVAILABLE",
+          message: "O banco de dados Firestore está indisponível para carregar credenciais necessárias para teste."
+        });
       }
 
+      const normalized = normalizeAIProviderError(err, provider, model);
       return res.json({
         success: false,
+        code: normalized.code,
         provider,
         model,
-        message: `Falha na requisição de teste: ${mappedErr}`
+        message: normalized.message
       });
     }
   });
