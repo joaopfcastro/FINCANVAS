@@ -175,6 +175,7 @@ Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, 
           contents: {
             parts: [...parts, { text: prompt }],
           },
+          timeoutMs: 60000,
           config: {
              responseMimeType: "application/json",
              responseSchema: {
@@ -351,7 +352,13 @@ Retorne OBRIGATORIAMENTE um array JSON de objetos contendo as chaves descritas, 
     } catch (err: any) {
       clearInterval(progressInterval);
       setProgress(0);
-      toast.error("Ocorreu um erro ao processar seus documentos.");
+      const isTimeout = err.message?.toLowerCase().includes('timeout') ||
+                        err.message?.toLowerCase().includes('demorou') ||
+                        err.message === 'AI_PROVIDER_TIMEOUT';
+      const userFriendlyError = isTimeout
+        ? 'A IA demorou mais que o esperado para responder ao OCR. Tente novamente ou reduza o tamanho do lote de arquivos.'
+        : "Ocorreu um erro ao processar seus documentos.";
+      toast.error(userFriendlyError);
       console.error(err);
       handleFirestoreError(err, OperationType.CREATE, 'transactions');
       setLoading(false);

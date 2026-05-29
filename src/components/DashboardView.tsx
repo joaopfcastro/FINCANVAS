@@ -562,7 +562,8 @@ export const DashboardView = React.memo(function DashboardView({
       const response = await secureGenerateContent({
         task: 'insight',
         model: 'gemini-3.5-flash',
-        contents: promptText
+        contents: promptText,
+        timeoutMs: 45000
       });
       
       const content = response.text || 'Nenhum insight retornado.';
@@ -579,7 +580,13 @@ export const DashboardView = React.memo(function DashboardView({
 
     } catch (e: any) {
       clearInterval(messageInterval);
-      setAiInsights('Erro ao analisar os dados com IA: ' + e.message);
+      const isTimeout = e.message?.toLowerCase().includes('timeout') ||
+                        e.message?.toLowerCase().includes('demorou') ||
+                        e.message === 'AI_PROVIDER_TIMEOUT';
+      const userFriendlyError = isTimeout
+        ? 'A IA demorou mais que o esperado para responder. Tente novamente em alguns segundos ou reduza o período analisado.'
+        : e.message;
+      setAiInsights('Erro ao analisar os dados com IA: ' + userFriendlyError);
       setModalType('insight');
       setAiLoading(false);
     }
@@ -654,7 +661,8 @@ export const DashboardView = React.memo(function DashboardView({
       const response = await secureGenerateContent({
         task: 'insight',
         model: 'gemini-3.5-flash',
-        contents: promptText
+        contents: promptText,
+        timeoutMs: 45000
       });
       
       const content = response.text || 'Dica não disponível.';
@@ -671,7 +679,13 @@ export const DashboardView = React.memo(function DashboardView({
 
     } catch (e: any) {
       clearInterval(messageInterval);
-      setModalAiInsight('Falha ao gerar o insight.');
+      const isTimeout = e.message?.toLowerCase().includes('timeout') ||
+                        e.message?.toLowerCase().includes('demorou') ||
+                        e.message === 'AI_PROVIDER_TIMEOUT';
+      const userFriendlyError = isTimeout
+        ? 'A IA demorou mais que o esperado para responder. Tente novamente em alguns segundos ou reduza o período analisado.'
+        : 'Falha ao gerar o insight.';
+      setModalAiInsight(userFriendlyError);
       setModalAiLoading(false);
     }
   };

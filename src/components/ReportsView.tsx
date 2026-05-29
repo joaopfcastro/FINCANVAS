@@ -424,7 +424,8 @@ export const ReportsView = React.memo(function ReportsView({
       const response = await secureGenerateContent({
         task: 'report',
         model: 'gemini-3.5-flash',
-        contents: promptText
+        contents: promptText,
+        timeoutMs: 60000
       });
       
       let content = response.text || '';
@@ -443,7 +444,13 @@ export const ReportsView = React.memo(function ReportsView({
 
     } catch (e: any) {
       clearInterval(messageInterval);
-      setError(e.message || 'Erro na geração do relatório.');
+      const isTimeout = e.message?.toLowerCase().includes('timeout') ||
+                        e.message?.toLowerCase().includes('demorou') ||
+                        e.message === 'AI_PROVIDER_TIMEOUT';
+      const userFriendlyError = isTimeout
+        ? 'A IA demorou mais que o esperado para responder. Tente novamente em alguns segundos ou reduza o período analisado.'
+        : (e.message || 'Erro na geração do relatório.');
+      setError(userFriendlyError);
       setLoading(false);
     }
   };

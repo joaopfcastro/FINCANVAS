@@ -1476,6 +1476,44 @@ async function runTests() {
     failed++;
   }
 
+  // 36. Teste de Ajuste de Timeout Real de Generative AI
+  try {
+    console.log("=== INICIANDO TESTE 36: AJUSTE DE TIMEOUT REAL DE IA ===");
+
+    const geminiContent = fs.readFileSync('./src/lib/gemini.ts', 'utf8');
+    const dashboardContent = fs.readFileSync('./src/components/DashboardView.tsx', 'utf8');
+    const reportsContent = fs.readFileSync('./src/components/ReportsView.tsx', 'utf8');
+    const importContent = fs.readFileSync('./src/components/ImportView.tsx', 'utf8');
+    const manualContent = fs.readFileSync('./src/components/ManualEntryModal.tsx', 'utf8');
+    const serverContent = fs.readFileSync('./server.ts', 'utf8');
+
+    // 1. O tipo GenerateContentParams de gemini.ts deve conter o parâmetro opcional timeoutMs
+    assert(geminiContent.includes("timeoutMs?: number;"), "GenerateContentParams em gemini.ts deve conter o parâmetro opcional timeoutMs");
+    assert(geminiContent.includes("timeoutMs: params.timeoutMs ?? 45000"), "secureGenerateContent deve passar o timeoutMs para apiFetchJson com fallback 45000");
+
+    // 2. Os componentes devem configurar timeouts corretos
+    assert(dashboardContent.includes("timeoutMs: 45000"), "DashboardView deve configurar timeoutMs para 45000ms");
+    assert(reportsContent.includes("timeoutMs: 60000"), "ReportsView deve configurar timeoutMs para 60000ms");
+    assert(importContent.includes("timeoutMs: 60000"), "ImportView deve configurar timeoutMs para 60000ms");
+    assert(manualContent.includes("timeoutMs: 60000"), "ManualEntryModal deve configurar timeoutMs para 60000ms (OCR)");
+    assert(manualContent.includes("timeoutMs: 30000"), "ManualEntryModal deve configurar timeoutMs para 30000ms (categoryFallback)");
+
+    // 3. Os tratamentos de erro de timeout no frontend devem ser amigáveis
+    assert(dashboardContent.includes("AI_PROVIDER_TIMEOUT") && dashboardContent.includes("demorou mais que o esperado"), "DashboardView deve tratar erros de timeout graciosamente");
+    assert(reportsContent.includes("AI_PROVIDER_TIMEOUT") && reportsContent.includes("demorou mais que o esperado"), "ReportsView deve tratar erros de timeout graciosamente");
+    assert(importContent.includes("AI_PROVIDER_TIMEOUT") && importContent.includes("demorou mais que o esperado"), "ImportView deve tratar erros de timeout graciosamente");
+
+    // 4. No backend (server.ts), deve haver Promise.race com timeouts específicos e código de erro
+    assert(serverContent.includes("timeoutByTask: Record<string, number>"), "server.ts deve declarar timeoutByTask de forma estrita");
+    assert(serverContent.includes("AI_PROVIDER_TIMEOUT"), "server.ts deve retornar o código AI_PROVIDER_TIMEOUT se o estouro ocorrer");
+
+    console.log("✅ PASSED: Teste 36 concluído com sucesso.");
+    passed++;
+  } catch (err: any) {
+    console.error("Erro no teste 36:", err);
+    failed++;
+  }
+
   console.log(`\n=== RESULTADO DOS TESTES: ${passed} Passaram | ${failed} Falharam ===`);
   if (failed > 0) {
     process.exit(1);

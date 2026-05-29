@@ -121,6 +121,7 @@ Aviso: Não classifique nenhuma categoria.`
             ],
           },
         ],
+        timeoutMs: 60000,
         config: {
           temperature: 0.1,
           responseMimeType: "application/json",
@@ -197,9 +198,15 @@ Aviso: Não classifique nenhuma categoria.`
           toast.warning("Dados extraídos por OCR; categoria precisa revisão");
         }
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      toast.error('Erro ao processar imagem.');
+      const isTimeout = err.message?.toLowerCase().includes('timeout') ||
+                        err.message?.toLowerCase().includes('demorou') ||
+                        err.message === 'AI_PROVIDER_TIMEOUT';
+      const userFriendlyError = isTimeout
+        ? 'A IA demorou mais que o esperado para responder ao OCR. Tente novamente em alguns segundos.'
+        : 'Erro ao processar imagem.';
+      toast.error(userFriendlyError);
     } finally {
       setIsScanning(false);
     }
@@ -319,6 +326,7 @@ Siga estas instruções críticas:
         task: 'categoryFallback',
         model: 'gemini-3.5-flash',
         contents: prompt,
+        timeoutMs: 30000,
         config: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -377,9 +385,15 @@ Siga estas instruções críticas:
       if (usedAi) {
         toast.success('Categoria e descrição refinadas com Inteligência Artificial!');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      toast.error("Erro na busca de sugestão via IA. Mantendo o fluxo local.");
+      const isTimeout = err.message?.toLowerCase().includes('timeout') ||
+                        err.message?.toLowerCase().includes('demorou') ||
+                        err.message === 'AI_PROVIDER_TIMEOUT';
+      const userFriendlyError = isTimeout
+        ? 'A IA demorou para responder. Mantendo o fluxo local.'
+        : "Erro na busca de sugestão via IA. Mantendo o fluxo local.";
+      toast.error(userFriendlyError);
     } finally {
       setIsSuggesting(false);
     }

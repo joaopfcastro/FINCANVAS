@@ -15,6 +15,7 @@ export interface GenerateContentParams {
   contents: any;
   config?: any;
   task?: string;
+  timeoutMs?: number;
 }
 
 export const secureGenerateContent = async (params: GenerateContentParams) => {
@@ -37,6 +38,8 @@ export const secureGenerateContent = async (params: GenerateContentParams) => {
       contents: params.contents,
       config: params.config,
     }),
+  }, {
+    timeoutMs: params.timeoutMs ?? 45000
   });
 
   if (!result.ok) {

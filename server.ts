@@ -1808,15 +1808,81 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       };
     }
 
-    const response = await generateAIContent({
-      provider: settings.provider,
-      apiKey: finalApiKey,
-      baseUrl: finalBaseUrl,
-      model: model || settings.model || getDefaultModel(settings.provider),
-      task: resolvedTask,
-      contents,
-      config
+    const timeoutByTask: Record<string, number> = {
+      insight: 45000,
+      report: 60000,
+      ocr: 60000,
+      categoryFallback: 30000,
+      general: 45000
+    };
+    const taskTimeoutMs = timeoutByTask[resolvedTask] || 45000;
+
+    let timeoutId: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error("AI_PROVIDER_TIMEOUT")), taskTimeoutMs);
     });
+
+    let response;
+    try {
+      response = await Promise.race([
+        generateAIContent({
+          provider: settings.provider,
+          apiKey: finalApiKey,
+          baseUrl: finalBaseUrl,
+          model: model || settings.model || getDefaultModel(settings.provider),
+          task: resolvedTask,
+          contents,
+          config
+        }),
+        timeoutPromise
+      ]);
+    } catch (err: any) {
+      const isTimeout = err.message === "AI_PROVIDER_TIMEOUT" || err.message?.toLowerCase().includes("timeout");
+      const isUnreachable = err.message?.toLowerCase().includes("unreachable") ||
+                            err.message?.toLowerCase().includes("fetch failed") ||
+                            err.message?.toLowerCase().includes("connection") ||
+                            err.message?.toLowerCase().includes("failed to fetch") ||
+                            err.message?.toLowerCase().includes("network") ||
+                            err.message?.toLowerCase().includes("enotfound") ||
+                            err.message?.toLowerCase().includes("econnreset");
+      
+      const ENABLE_SIMULATED_AI_FALLBACK = process.env.ENABLE_SIMULATED_AI_FALLBACK === "true";
+      const IS_PRODUCTION = process.env.NODE_ENV === "production";
+
+      if (!IS_PRODUCTION && ENABLE_SIMULATED_AI_FALLBACK && (isTimeout || isUnreachable)) {
+        console.log(`[processAIGenerateRequest] Falling back to simulated response for task ${resolvedTask}`);
+        try {
+          const simulated = getSimulatedGeminiResponse(model || settings.model || "gemini-3.5-flash", contents, config);
+          return {
+            status: 200,
+            successResponse: {
+              text: simulated.text,
+              provider: settings.provider,
+              model: model || settings.model || "gemini-3.5-flash",
+              simulated: true
+            }
+          };
+        } catch (simErr: any) {
+          console.error("[processAIGenerateRequest] Failed to get simulated response:", simErr.message);
+        }
+      }
+
+      if (isTimeout) {
+        return {
+          status: 428,
+          errorResponse: {
+            error: "AI_PROVIDER_TIMEOUT",
+            message: "O provedor de IA demorou demais para responder. Tente novamente ou reduza o volume de dados enviado."
+          }
+        };
+      }
+
+      throw err;
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    }
 
     return {
       status: 200,
