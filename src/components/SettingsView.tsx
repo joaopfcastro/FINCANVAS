@@ -62,6 +62,15 @@ export interface AITestStep {
 }
 
 export interface AITestResult {
+  status: 'none' | 'success' | 'error';
+  title: string;
+  summary: string;
+  provider?: string;
+  model?: string;
+  code?: string;
+  checkedAt?: string;
+  providerEcho?: string;
+  rawMessage?: string;
   steps: AITestStep[];
   logs: string[];
 }
@@ -424,6 +433,11 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
     ];
 
     setAiTestResult({
+      status: 'none',
+      title: 'Testando conexão de IA',
+      summary: 'Validando credenciais, provedor e modelo configurado.',
+      provider: selectedProvider,
+      model: testModel,
       steps: initialSteps,
       logs: initialLogs
     });
@@ -445,6 +459,11 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
       );
 
       setAiTestResult({
+        status: 'none',
+        title: 'Testando conexão de IA',
+        summary: 'Resolvendo host e disparando verificação secundária...',
+        provider: selectedProvider,
+        model: testModel,
         steps: [...currentSteps],
         logs: [...currentLogs]
       });
@@ -473,6 +492,11 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
       );
 
       setAiTestResult({
+        status: 'none',
+        title: 'Testando conexão de IA',
+        summary: 'Autenticando contra o provedor de IA selecionado...',
+        provider: selectedProvider,
+        model: testModel,
         steps: [...currentSteps],
         logs: [...currentLogs]
       });
@@ -499,6 +523,14 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         );
 
         setAiTestResult({
+          status: 'success',
+          title: 'Conexão validada com sucesso',
+          summary: 'O provedor respondeu corretamente e está pronto para uso no FINCANVAS.',
+          provider: selectedProvider,
+          model: testModel,
+          checkedAt: new Date().toISOString(),
+          rawMessage: res.data?.message || "Conexão testada com sucesso!",
+          providerEcho: res.data?.providerEcho,
           steps: [...currentSteps],
           logs: [...currentLogs]
         });
@@ -537,6 +569,15 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         );
 
         setAiTestResult({
+          status: 'error',
+          title: 'Falha no teste de conexão',
+          summary: finalMsg,
+          provider: selectedProvider,
+          model: testModel,
+          code: code,
+          checkedAt: new Date().toISOString(),
+          rawMessage: res.data?.message || res.message,
+          providerEcho: res.data?.providerEcho,
           steps: [...currentSteps],
           logs: [...currentLogs]
         });
@@ -566,6 +607,13 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
       );
 
       setAiTestResult({
+        status: 'error',
+        title: 'Falha no teste de conexão',
+        summary: errorMsg,
+        provider: selectedProvider,
+        model: testModel,
+        checkedAt: new Date().toISOString(),
+        rawMessage: err.message || String(err),
         steps: [...currentSteps],
         logs: [...currentLogs]
       });
@@ -1235,12 +1283,6 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       placeholder={isCurrentProviderSaved ? `Sua chave ativa está oculta (${maskedKey})` : "Insira a chave de acesso da API"}
                       className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none font-mono disabled:opacity-50"
                     />
-                    
-                    {isCurrentProviderSaved && (
-                      <p className="text-[11px] text-slate-400 font-mono">
-                        Chave ativa: {maskedKey}
-                      </p>
-                    )}
                   </div>
 
                   {/* Indicador de Status detalhado */}
@@ -1272,37 +1314,25 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                                   : testStatus === 'success'
                                     ? 'bg-emerald-500'
                                     : testStatus === 'error'
-                                      ? 'bg-rose-100' // non-crash soft indicator
+                                      ? 'bg-rose-500'
                                       : 'bg-emerald-500'
                           }`}></span>
                         </span>
                         <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                          {!apiAvailable
-                            ? 'API Offline / Indisponível'
-                            : !aiSettings.aiEnabled 
-                              ? 'IA desativada' 
-                              : !isCurrentProviderSaved && selectedProvider !== 'ollama'
-                                ? 'Chave não configurada'
-                                : testStatus === 'success'
-                                  ? 'Conexão testada com sucesso'
-                                  : testStatus === 'error'
-                                    ? 'Erro ao testar conexão'
-                                    : 'Chave configurada'}
+                          {testingConnection
+                            ? 'Testando conexão...'
+                            : testStatus === 'success'
+                              ? 'Conexão validada'
+                              : testStatus === 'error'
+                                ? 'Erro no teste'
+                                : 'Teste ainda não executado'}
                         </span>
                       </div>
                     </div>
-
-                    {testMessage && !aiTestResult && (
-                      <p className={`text-[11px] leading-snug font-mono max-w-sm break-all ${
-                        testStatus === 'success' ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
-                      }`}>
-                        {testMessage}
-                      </p>
-                    )}
                   </div>
 
                   {aiTestResult && (
-                    <div className="mt-4 bg-slate-900 border border-slate-800 p-4 rounded-xl text-slate-100 space-y-4">
+                    <div className="mt-4 bg-slate-900 border border-slate-800 p-4 rounded-xl text-slate-100 space-y-4 w-full">
                       <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
                         <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                           <Brain className="w-4 h-4 text-emerald-400 animate-pulse" />
@@ -1323,57 +1353,49 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
 
                       {/* 1. Status Realçado */}
                       <div className={`p-3 rounded-lg border flex items-start gap-2.5 ${
-                        testStatus === 'success'
+                        aiTestResult.status === 'success'
                           ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-200'
-                          : testStatus === 'error'
+                          : aiTestResult.status === 'error'
                             ? 'bg-rose-500/10 border-rose-500/20 text-rose-200'
                             : 'bg-blue-500/10 border-blue-500/20 text-blue-200'
                       }`}>
                         <div className="mt-0.5 shrink-0">
-                          {testStatus === 'success' ? (
+                          {aiTestResult.status === 'success' ? (
                             <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                          ) : testStatus === 'error' ? (
+                          ) : aiTestResult.status === 'error' ? (
                             <AlertTriangle className="w-4 h-4 text-rose-400 animate-pulse" />
                           ) : (
                             <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
                           )}
                         </div>
-                        <div className="space-y-0.5">
+                        <div className="space-y-0.5 select-text">
                           <h4 className="text-xs font-bold uppercase tracking-wider text-white">
-                            {testStatus === 'success'
-                              ? 'Status: Conectado'
-                              : testStatus === 'error'
-                                ? 'Status: Erro de Conectividade'
-                                : 'Status: Testando Conexão...'}
+                            {aiTestResult.title}
                           </h4>
                           <p className="text-[11px] leading-relaxed text-slate-300">
-                            {testStatus === 'success'
-                              ? 'Handshake autenticado de forma bem-sucedida. O gateway operacional respondeu às validações de API.'
-                              : testStatus === 'error'
-                                ? testMessage
-                                : 'Aguardando validações de rota de rede e resposta do modelo de IA.'}
+                            {aiTestResult.summary}
                           </p>
                         </div>
                       </div>
 
                       {/* 2. Métricas */}
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-[10px]">
-                        <div className="bg-black/35 p-2 border border-slate-800 rounded-lg">
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-[10px] w-full">
+                        <div className="bg-black/35 p-2 border border-slate-800 rounded-lg min-w-0">
                           <p className="font-bold uppercase text-slate-500 tracking-wider text-[9px]">Provedor</p>
-                          <p className="font-bold text-slate-300 mt-0.5 uppercase tracking-wide truncate">{selectedProvider}</p>
+                          <p className="font-bold text-slate-300 mt-0.5 uppercase tracking-wide truncate">{aiTestResult.provider || 'Nenhum'}</p>
                         </div>
-                        <div className="bg-black/35 p-2 border border-slate-800 rounded-lg">
+                        <div className="bg-black/35 p-2 border border-slate-800 rounded-lg min-w-0">
                           <p className="font-bold uppercase text-slate-500 tracking-wider text-[9px]">Modelo Alvo</p>
-                          <p className="font-bold text-slate-300 mt-0.5 truncate" title={selectedModel || getDefaultModel(selectedProvider)}>{selectedModel || getDefaultModel(selectedProvider)}</p>
+                          <p className="font-bold text-slate-300 mt-0.5 truncate" title={aiTestResult.model}>{aiTestResult.model || 'Nenhum'}</p>
                         </div>
-                        <div className="bg-black/35 p-2 border border-slate-800 rounded-lg">
-                          <p className="font-bold uppercase text-slate-500 tracking-wider text-[9px]">Protocolo</p>
-                          <p className="font-bold text-slate-300 mt-0.5 font-sans">REST / HTTPS</p>
+                        <div className="bg-black/35 p-2 border border-slate-800 rounded-lg min-w-0">
+                          <p className="font-bold uppercase text-slate-500 tracking-wider text-[9px]">Fase Atual</p>
+                          <p className="font-bold text-slate-300 mt-0.5 truncate uppercase">{aiTestResult.status === 'success' ? 'Verificado' : aiTestResult.status === 'error' ? 'Falha' : 'Em Execução'}</p>
                         </div>
-                        <div className="bg-black/35 p-2 border border-slate-800 rounded-lg">
-                          <p className="font-bold uppercase text-slate-500 tracking-wider text-[9px]">Latência Relativa</p>
-                          <p className="font-bold text-slate-300 mt-0.5">
-                            {testStatus === 'success' ? 'Baixa (Imediata)' : testingConnection ? 'Calculando...' : '-'}
+                        <div className="bg-black/35 p-2 border border-slate-800 rounded-lg min-w-0">
+                          <p className="font-bold uppercase text-slate-500 tracking-wider text-[9px]">Código de Status</p>
+                          <p className="font-bold text-slate-300 mt-0.5 truncate uppercase tracking-wide text-rose-300">
+                            {aiTestResult.code || 'OK'}
                           </p>
                         </div>
                       </div>
@@ -1415,12 +1437,12 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                             const stepStyle = getStepStatusStyle();
 
                             return (
-                              <div key={idx} className={`flex items-center justify-between px-3 py-1.5 border rounded-lg ${stepStyle.bg}`}>
-                                <div className="flex flex-col text-left">
-                                  <span className="font-bold">{step.name}</span>
-                                  {step.details && <span className="text-[10px] text-slate-400 font-sans mt-0.5">{step.details}</span>}
+                              <div key={idx} className={`flex items-center justify-between px-3 py-1.5 border rounded-lg gap-2 ${stepStyle.bg}`}>
+                                <div className="flex flex-col text-left min-w-0">
+                                  <span className="font-bold truncate">{step.name}</span>
+                                  {step.details && <span className="text-[10px] text-slate-400 font-sans mt-0.5 whitespace-pre-wrap break-words">{step.details}</span>}
                                 </div>
-                                <span className={`text-[9px] px-2 py-0.5 rounded font-bold uppercase ${stepStyle.style}`}>
+                                <span className={`text-[9px] px-2 py-0.5 rounded font-bold uppercase shrink-0 ${stepStyle.style}`}>
                                   {stepStyle.statusLabel}
                                 </span>
                               </div>
@@ -1430,7 +1452,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       </div>
 
                       {/* 4. Área Técnica Recolhível */}
-                      <div className="border border-slate-800 rounded-lg overflow-hidden bg-black/20">
+                      <div className="border border-slate-800 rounded-lg overflow-hidden bg-black/20 w-full">
                         <button
                           type="button"
                           onClick={() => setIsAiDiagnosticsOpen(!isAiDiagnosticsOpen)}
@@ -1445,8 +1467,8 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                         </button>
 
                         {isAiDiagnosticsOpen && (
-                          <div className="p-2.5 border-t border-slate-800 bg-black text-slate-350">
-                            <pre className="text-[9.5px] font-mono leading-relaxed max-h-36 overflow-y-auto whitespace-pre-wrap break-all pr-1 select-all w-full max-w-full text-left">
+                          <div className="p-2.5 border-t border-slate-800 bg-black text-slate-350 w-full overflow-hidden">
+                            <pre className="text-[9.5px] font-mono leading-relaxed max-h-36 overflow-y-auto overflow-x-auto whitespace-pre-wrap break-words pr-1 select-all w-full max-w-full text-left">
                               {aiTestResult.logs.map((logMsg, logIdx) => {
                                 let classMap = "text-slate-350";
                                 if (logMsg.toLowerCase().includes('[erro]') || logMsg.toLowerCase().includes('critical') || logMsg.toLowerCase().includes('falhou')) {
@@ -1461,25 +1483,32 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                         )}
                       </div>
 
-                      {/* 5. Botão Copiar Diagnóstico */}
+                      {/* 5. Botão Copiar Diagnóstico corrigido e autocontido */}
                       <button
                         type="button"
                         onClick={() => {
                           const diagnosticText = `=========================================
 DIAGNÓSTICO DA CONEXÃO DE IA - FINCANVAS
 =========================================
-Data/Hora: ${new Date().toLocaleString()}
-Provedor: ${selectedProvider}
-Modelo: ${selectedModel || 'Padrão'}
-Base URL: ${baseUrlInput || 'Padrão (Nuvem)'}
-Chave de API: ${isCurrentProviderSaved || apiKeyInput ? 'Configurada [Ocultada por Segurança]' : 'Não configurada'}
-Status Geral: ${testStatus === 'success' ? 'SUCESSO ✅' : 'FALHA ❌'}
+Status Geral: ${aiTestResult.status.toUpperCase()}
+Título: ${aiTestResult.title}
+Resumo: ${aiTestResult.summary}
+Provedor: ${aiTestResult.provider || 'Não informado'}
+Modelo: ${aiTestResult.model || 'Não informado'}
+Código do Erro: ${aiTestResult.code || 'Nenhum'}
+Horário da Verificação: ${aiTestResult.checkedAt || new Date().toISOString()}
 
 ETAPAS DO DIAGNÓSTICO:
 ${aiTestResult.steps.map(step => `- [${step.status}] ${step.name}: ${step.details || ''}`).join('\n')}
 
-LOGS DE EXECUÇÃO:
+LOGS DETALHADOS:
 ${aiTestResult.logs.join('\n')}
+
+DETALHES DA RESPOSTA (ECHO):
+${aiTestResult.providerEcho || 'Nenhum eco retornado'}
+
+MENSAGEM SECUNDÁRIA:
+${aiTestResult.rawMessage || 'Nenhuma'}
 =========================================`;
                           
                           navigator.clipboard.writeText(diagnosticText);

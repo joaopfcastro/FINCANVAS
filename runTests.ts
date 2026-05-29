@@ -1407,6 +1407,44 @@ async function runTests() {
     failed++;
   }
 
+  // 34. Teste de Robustecimento Visual de Conexão de IA (Fase 9)
+  try {
+    console.log("=== INICIANDO TESTE 34: ROBUSTECIMENTO VISUAL DE CONEXÃO DE IA (FASE 9) ===");
+
+    const settingsContent = fs.readFileSync('./src/components/SettingsView.tsx', 'utf8');
+    const serverContent = fs.readFileSync('./server.ts', 'utf8');
+
+    // 1. SettingsView.tsx contém AITestResult com status, title, summary, provider, model
+    assert(settingsContent.includes("status: 'none' | 'success' | 'error'"), "SettingsView.tsx deve conter o status no AITestResult");
+    assert(settingsContent.includes("title: string"), "SettingsView.tsx deve conter title: string no AITestResult");
+    assert(settingsContent.includes("summary: string"), "SettingsView.tsx deve conter summary: string no AITestResult");
+    assert(settingsContent.includes("provider?: string"), "SettingsView.tsx deve conter provider: string no AITestResult");
+    assert(settingsContent.includes("model?: string"), "SettingsView.tsx deve conter model: string no AITestResult");
+
+    // 2. SettingsView.tsx contém "Copiar laudo de diagnóstico" ou "Copiar diagnóstico"
+    assert(settingsContent.includes("Copiar laudo de diagnóstico") || settingsContent.includes("Copiar diagnóstico"), "SettingsView.tsx deve conter o botão 'Copiar laudo de diagnóstico'");
+
+    // 3. SettingsView.tsx não contém mais "font-mono max-w-sm break-all" associado ao testMessage
+    assert(!settingsContent.includes("font-mono max-w-sm break-all"), "Não deve restar nenhum trecho com font-mono max-w-sm break-all do testMessage legado");
+
+    // 4. SettingsView.tsx não copia apiKeyInput no diagnóstico
+    assert(!settingsContent.includes("apiKeyInput") || !settingsContent.match(/diagnosticText[\s\S]*apiKeyInput/), "Não deve conter apiKeyInput dentro do bloco de texto copiado no diagnóstico");
+
+    // 5. server.ts retorna providerEcho separado de message no endpoint /api/ai/credentials/test
+    assert(serverContent.includes("providerEcho:"), "server.ts deve conter o campo providerEcho no retorno de test");
+    assert(serverContent.includes("message:"), "server.ts deve retornar message separada no test");
+
+    // 6. server.ts não usa response.text como message principal no sucesso do teste
+    // O sucesso do teste deve retornar uma mensagem amigável separada de response.text
+    assert(serverContent.includes("message: \"Teste de inferência de LLM executado com sucesso") || serverContent.includes("message: 'Teste de inferência de LLM executado com sucesso") || !serverContent.match(/message:\s*response\.text/), "server.ts não deve abusar de response.text como message principal de sucesso");
+
+    console.log("✅ PASSED: Teste 34 concluído com sucesso.");
+    passed++;
+  } catch (err: any) {
+    console.error("Erro no teste 34:", err);
+    failed++;
+  }
+
   console.log(`\n=== RESULTADO DOS TESTES: ${passed} Passaram | ${failed} Falharam ===`);
   if (failed > 0) {
     process.exit(1);
