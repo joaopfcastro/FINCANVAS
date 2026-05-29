@@ -1,4 +1,5 @@
 import { auth } from '../firebase';
+import { apiFetchJson } from './apiClient';
 
 export enum Type {
   ARRAY = 'ARRAY',
@@ -27,7 +28,7 @@ export const secureGenerateContent = async (params: GenerateContentParams) => {
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  const response = await fetch('/api/ai/generate', {
+  const result = await apiFetchJson<any>('/api/ai/generate', {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -38,12 +39,11 @@ export const secureGenerateContent = async (params: GenerateContentParams) => {
     }),
   });
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || errorData.message || 'Falha na comunicação com o servidor de IA.');
+  if (!result.ok) {
+    throw new Error(result.message || 'Falha na comunicação com o servidor de IA.');
   }
 
-  return response.json();
+  return result.data;
 };
 
 export interface AIUserSettings {
@@ -63,14 +63,13 @@ export const fetchAISettings = async (): Promise<AIUserSettings | null> => {
   if (!user) return null;
   try {
     const token = await user.getIdToken();
-    const res = await fetch('/api/ai/credentials/status', {
+    const result = await apiFetchJson<any>('/api/ai/credentials/status', {
       headers: {
         'Authorization': `Bearer ${token}`
       }
     });
-    if (res.ok) {
-      const data = await res.json();
-      return data.settings;
+    if (result.ok && result.data) {
+      return result.data.settings;
     }
   } catch (err) {
     console.error('Error fetching AI settings:', err);

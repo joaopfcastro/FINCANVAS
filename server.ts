@@ -430,6 +430,15 @@ async function startServer() {
   // Parse large payloads (receipt images)
   app.use(express.json({ limit: "50mb" }));
 
+  // 0. Health check endpoint
+  app.get("/api/health", (_req, res) => {
+    res.json({
+      ok: true,
+      service: "FINCANVAS API",
+      timestamp: new Date().toISOString()
+    });
+  });
+
   // Helper to retrieve and validate Pluggy credentials securely in backend
   const getPluggyCredentialsOrThrow = async (req?: express.Request) => {
     let uid = (req as any)?.user?.uid;
@@ -1757,21 +1766,28 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
   // 1. POST /api/ai/credentials/save
   app.post("/api/ai/credentials/save", requireAuth, async (req, res) => {
     const uid = (req as any).user.uid;
-    const { provider, apiKey, baseUrl, model } = req.body;
-
-    const validation = validateProviderConnectionConfig(
-      provider,
-      baseUrl,
-      apiKey,
-      process.env.NODE_ENV || "development"
-    );
-
-    if (!validation.isValid) {
-      return res.status(400).json({ error: validation.error || "Configuração inválida de IA." });
-    }
+    let { provider, apiKey, baseUrl, model } = req.body;
 
     try {
       const secretsRef = db.collection("users").doc(uid).collection("secrets").doc("ai");
+      const secretDoc = await secretsRef.get();
+      const savedData = secretDoc.exists ? secretDoc.data() : null;
+
+      if (!apiKey && savedData && savedData.provider === provider) {
+        apiKey = savedData.apiKey;
+      }
+
+      const validation = validateProviderConnectionConfig(
+        provider,
+        baseUrl,
+        apiKey,
+        process.env.NODE_ENV || "development"
+      );
+
+      if (!validation.isValid) {
+        return res.status(400).json({ error: validation.error || "Configuração inválida de IA." });
+      }
+
       const keyMasked = maskApiKey(apiKey || "");
 
       const dataToSave = {
@@ -1780,7 +1796,7 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         keyMasked,
         baseUrl: baseUrl || "",
         model: model || getDefaultModel(provider),
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: savedData ? (savedData.createdAt || admin.firestore.FieldValue.serverTimestamp()) : admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       };
 
@@ -1876,16 +1892,21 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
     let { provider, apiKey, baseUrl, model } = req.body;
 
     try {
+      const secretDoc = await db.collection("users").doc(uid).collection("secrets").doc("ai").get();
+      const savedData = secretDoc.exists ? secretDoc.data() : null;
+
       if (!provider) {
-        const secretDoc = await db.collection("users").doc(uid).collection("secrets").doc("ai").get();
-        if (!secretDoc.exists) {
+        if (!savedData) {
           return res.status(400).json({ error: "Nenhuma credencial de IA configurada para teste." });
         }
-        const secretData = secretDoc.data()!;
-        provider = secretData.provider;
-        apiKey = secretData.apiKey;
-        baseUrl = secretData.baseUrl;
-        model = secretData.model;
+        provider = savedData.provider;
+        apiKey = savedData.apiKey;
+        baseUrl = savedData.baseUrl;
+        model = savedData.model;
+      } else {
+        if (!apiKey && savedData && savedData.provider === provider) {
+          apiKey = savedData.apiKey;
+        }
       }
 
       const validation = validateProviderConnectionConfig(

@@ -12,6 +12,8 @@ import {
   isLocalBaseUrl 
 } from '../lib/ai/providerRegistry';
 import { AIProvider } from '../lib/ai/types';
+import { apiFetchJson } from '../lib/apiClient';
+import { ToggleSwitch } from './ui/ToggleSwitch';
 
 function normalizeText(text: string): string {
   if (!text) return '';
@@ -61,6 +63,9 @@ interface SettingsViewProps {
 export const SettingsView = React.memo(function SettingsView({ user, profile, transactions, learnedRules = [] }: SettingsViewProps) {
   const [activePanel, setActivePanel] = useState<'perfil' | 'notif' | 'dados' | 'ia' | 'aparencia' | 'pluggy' | 'regras'>('perfil');
   const [isMobileMenu, setIsMobileMenu] = useState(true);
+
+  // State to track if the backend API is online & available
+  const [apiAvailable, setApiAvailable] = useState<boolean | null>(null);
 
   // States for AI Settings & credentials
   const [aiSettings, setAiSettings] = useState({
@@ -117,21 +122,41 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
     return false;
   };
 
-  // Fetch initial AI Status and Settings
+  // Fetch initial AI Status and Settings with healthcheck first
   useEffect(() => {
     let active = true;
     const loadData = async () => {
       try {
         setLoadingStatus(true);
+        
+        // 1. Verificar disponibilidade da API (Health check)
+        const healthRes = await apiFetchJson<{ ok: boolean }>('/api/health');
+        if (!healthRes.ok) {
+          if (active) {
+            setApiAvailable(false);
+            setLoadingStatus(false);
+          }
+          return;
+        }
+        
+        if (active) {
+          setApiAvailable(true);
+        }
+
+        // 2. Carrega credenciais
         const token = await user.getIdToken();
-        const res = await fetch('/api/ai/credentials/status', {
+        const res = await apiFetchJson<any>('/api/ai/credentials/status', {
           headers: {
             'Authorization': `Bearer ${token}`
           }
         });
-        if (!res.ok) throw new Error('Erro na resposta do backend');
-        const data = await res.json();
-        if (active) {
+
+        if (!res.ok) {
+          throw new Error(res.message || 'Erro na resposta do backend');
+        }
+
+        const data = res.data;
+        if (active && data) {
           setIsCredentialSaved(data.configured);
           if (data.configured) {
             setSavedProvider(data.provider || '');
@@ -164,6 +189,10 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
 
   // Saving settings logic (without apiKey inside body!)
   const handleToggleAI = async (checked: boolean) => {
+    if (!apiAvailable) {
+      toast.error("Não é possível alterar as configurações pois a API do FINCANVAS está offline.");
+      return;
+    }
     if (checked && !canEnableAI) {
       toast.error("Configure e salve sua chave de acesso primeiro para ativar a Inteligência Artificial (exceto para instâncias locais do Ollama).");
       return;
@@ -172,7 +201,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
     try {
       setSavingAiSettings(true);
       const token = await user.getIdToken();
-      const res = await fetch('/api/ai/settings', {
+      const res = await apiFetchJson<{ success: boolean; settings: any }>('/api/ai/settings', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -187,12 +216,11 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         })
       });
       
-      const result = await safeJsonClient(res);
-      if (res.ok && result.success) {
-        setAiSettings(result.settings);
+      if (res.ok && res.data?.success) {
+        setAiSettings(res.data.settings);
         toast.success(checked ? "Inteligência Artificial ativada com sucesso!" : "Inteligência Artificial desativada.");
       } else {
-        toast.error(result.error || result.message || "Falha ao salvar as configurações.");
+        toast.error(res.message || "Falha ao salvar as configurações.");
       }
     } catch (err: any) {
       toast.error("Erro de conexão ao salvar configurações: " + err.message);
@@ -202,6 +230,14 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const handleTogglePermission = async (field: string, value: boolean) => {
+    if (!apiAvailable) {
+      toast.error("Não é possível alterar as permissões pois a API do FINCANVAS está offline.");
+      return;
+    }
+    if (!aiSettings.aiEnabled) {
+      toast.error("Ative a Inteligência Artificial globalmente antes de configurar permissões.");
+      return;
+    }
     try {
       setSavingAiSettings(true);
       const token = await user.getIdToken();
@@ -211,7 +247,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         [field]: value
       };
       
-      const res = await fetch('/api/ai/settings', {
+      const res = await apiFetchJson<{ success: boolean; settings: any }>('/api/ai/settings', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -220,12 +256,11 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         body: JSON.stringify(nextSettings)
       });
       
-      const result = await safeJsonClient(res);
-      if (res.ok && result.success) {
-        setAiSettings(result.settings);
+      if (res.ok && res.data?.success) {
+        setAiSettings(res.data.settings);
         toast.success("Opção de IA atualizada.");
       } else {
-        toast.error(result.error || result.message || "Falha ao salvar configuração.");
+        toast.error(res.message || "Falha ao salvar configuração.");
       }
     } catch (err: any) {
       toast.error("Erro de de conexão ao salvar configurações: " + err.message);
@@ -235,17 +270,27 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const handleSaveCredential = async () => {
+    if (!apiAvailable) {
+      toast.error("Não é possível salvar credenciais pois a API do FINCANVAS está offline.");
+      return;
+    }
     if (!selectedProvider) {
       toast.error("Selecione um provedor.");
       return;
     }
     
-    if ((selectedProvider === 'custom_openai_compatible' || selectedProvider === 'opencode_api') && !baseUrlInput.trim()) {
+    let cleanedBaseUrl = baseUrlInput.trim();
+    if (cleanedBaseUrl) {
+      // Clean duplicate/trailing slashes (except http:// or https://)
+      cleanedBaseUrl = cleanedBaseUrl.replace(/([^:])\/{2,}/g, '$1/');
+    }
+    
+    if ((selectedProvider === 'custom_openai_compatible' || selectedProvider === 'opencode_api') && !cleanedBaseUrl) {
       toast.error("A Base URL é obrigatória para este provedor.");
       return;
     }
     
-    if (selectedProvider === 'opencode_api' && !apiKeyInput.trim() && !isLocalBaseUrl(baseUrlInput)) {
+    if (selectedProvider === 'opencode_api' && !apiKeyInput.trim() && !isLocalBaseUrl(cleanedBaseUrl)) {
       toast.error("A API Key é obrigatória para instâncias remotas da OpenCode API.");
       return;
     }
@@ -258,7 +303,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
     try {
       setSavingAiSettings(true);
       const token = await user.getIdToken();
-      const res = await fetch('/api/ai/credentials/save', {
+      const res = await apiFetchJson<any>('/api/ai/credentials/save', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -267,23 +312,23 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         body: JSON.stringify({
           provider: selectedProvider,
           apiKey: apiKeyInput.trim() || undefined,
-          baseUrl: baseUrlInput.trim() || undefined,
+          baseUrl: cleanedBaseUrl || undefined,
           model: selectedModel.trim() || undefined
         })
       });
       
-      const result = await safeJsonClient(res);
-      if (res.ok && result.configured) {
+      if (res.ok && res.data?.configured) {
         setIsCredentialSaved(true);
-        setSavedProvider(result.provider);
-        setMaskedKey(result.keyMasked);
-        setSavedModel(result.model);
-        setSavedBaseUrl(result.baseUrl);
+        setSavedProvider(res.data.provider);
+        setMaskedKey(res.data.keyMasked);
+        setSavedModel(res.data.model);
+        setSavedBaseUrl(res.data.baseUrl);
         
+        setBaseUrlInput(res.data.baseUrl);
         setApiKeyInput('');
         toast.success("Credencial salva com sucesso!");
       } else {
-        toast.error(result.error || result.message || "Erro ao salvar credenciais.");
+        toast.error(res.message || "Erro ao salvar credenciais.");
       }
     } catch (err: any) {
       toast.error("Erro ao salvar credencial: " + err.message);
@@ -293,23 +338,47 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const handleTestConnection = async () => {
+    if (!apiAvailable) {
+      toast.error("Não é possível testar conexão pois a API do FINCANVAS está offline.");
+      return;
+    }
+    if (!selectedProvider) {
+      toast.error("Selecione um provedor de IA antes de testar.");
+      return;
+    }
+
+    let cleanedBaseUrl = baseUrlInput.trim();
+    if (cleanedBaseUrl) {
+      cleanedBaseUrl = cleanedBaseUrl.replace(/([^:])\/{2,}/g, '$1/');
+    }
+
+    if ((selectedProvider === 'custom_openai_compatible' || selectedProvider === 'opencode_api') && !cleanedBaseUrl) {
+      toast.error("A Base URL é obrigatória para testar este provedor.");
+      return;
+    }
+
+    if (['gemini', 'openai', 'anthropic', 'openrouter'].includes(selectedProvider) && !apiKeyInput.trim() && !isCurrentProviderSaved) {
+      toast.error("A API Key é necessária para testar o provedor " + selectedProvider);
+      return;
+    }
+
     try {
       setTestingConnection(true);
       setTestStatus('none');
       setTestMessage('');
       const token = await user.getIdToken();
       
-      const hasModifications = selectedProvider !== savedProvider || baseUrlInput !== savedBaseUrl || selectedModel !== savedModel || !!apiKeyInput;
+      const hasModifications = selectedProvider !== savedProvider || cleanedBaseUrl !== savedBaseUrl || selectedModel !== savedModel || !!apiKeyInput;
       
       const body: any = {};
       if (hasModifications) {
         body.provider = selectedProvider;
         body.apiKey = apiKeyInput || undefined;
-        body.baseUrl = baseUrlInput || undefined;
+        body.baseUrl = cleanedBaseUrl || undefined;
         body.model = selectedModel || undefined;
       }
       
-      const res = await fetch('/api/ai/credentials/test', {
+      const res = await apiFetchJson<any>('/api/ai/credentials/test', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -318,14 +387,13 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         body: JSON.stringify(body)
       });
       
-      const result = await safeJsonClient(res);
-      if (res.ok && result.success) {
+      if (res.ok && res.data?.success) {
         setTestStatus('success');
-        setTestMessage(result.message || "Conexão testada com sucesso!");
+        setTestMessage(res.data.message || "Conexão testada com sucesso!");
         toast.success("Teste de conexão bem-sucedido!");
       } else {
         setTestStatus('error');
-        setTestMessage(result.error || result.message || "Erro ao testar conexão.");
+        setTestMessage(res.message || res.data?.message || "Erro ao testar conexão.");
         toast.error("Erro no teste de conexão.");
       }
     } catch (err: any) {
@@ -338,17 +406,20 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   };
 
   const handleRemoveCredential = async () => {
+    if (!apiAvailable) {
+      toast.error("Não é possível remover credenciais pois a API do FINCANVAS está offline.");
+      return;
+    }
     try {
       setSavingAiSettings(true);
       const token = await user.getIdToken();
-      const res = await fetch('/api/ai/credentials/delete', {
+      const res = await apiFetchJson<any>('/api/ai/credentials/delete', {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${token}`
         }
       });
       
-      const result = await safeJsonClient(res);
       if (res.ok) {
         setIsCredentialSaved(false);
         setSavedProvider('');
@@ -370,10 +441,10 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         
         toast.success("Credenciais de IA removidas e IA desativada.");
       } else {
-        toast.error(result.error || result.message || "Falha ao remover credenciais.");
+        toast.error(res.message || "Falha ao remover credenciais.");
       }
     } catch (err: any) {
-      toast.error("Erro ao remover credenciais: " + err.message);
+      toast.error("Erro de conexão ao remover credenciais: " + err.message);
     } finally {
       setSavingAiSettings(false);
     }
@@ -567,7 +638,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
       
       <div className={`flex-1 p-4 md:p-8 w-full sm:pb-8 flex flex-col ${isMobileMenu ? 'overflow-hidden pb-20' : 'overflow-y-auto pb-24'}`}>
         <div className="max-w-6xl xl:max-w-7xl mx-auto flex flex-col md:flex-row gap-0 md:gap-8 flex-1 w-full relative">
-          <aside className={`w-full md:w-64 flex-shrink-0 flex-col gap-2.5 md:gap-2 pb-2 md:pb-0 h-full overflow-y-auto md:overflow-y-visible ${isMobileMenu ? 'flex' : 'hidden md:flex'}`}>
+          <aside className={`w-full md:w-64 flex-shrink-0 flex-col gap-2.5 md:gap-2 pb-2 md:pb-0 md:sticky md:top-4 md:self-start md:overflow-y-visible ${isMobileMenu ? 'flex h-full overflow-y-auto' : 'hidden md:flex'}`}>
             <button 
               onClick={() => { setActivePanel('perfil'); setIsMobileMenu(false); }}
               className={`w-full text-left px-4 py-3.5 md:px-4 md:py-2.5 text-sm md:font-bold rounded-2xl md:rounded-lg transition-all flex items-center shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] md:shadow-none border border-slate-100 md:border-transparent ${activePanel === 'perfil' ? 'bg-emerald-50/50 md:bg-emerald-50 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 border-emerald-100/50' : 'bg-white md:bg-transparent text-slate-700 md:text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/50'} active:scale-[0.98]`}>
@@ -624,14 +695,14 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
               <span className="font-bold text-[14px] md:text-sm">Regras de Aprendizado</span>
               <ChevronRight className="md:hidden w-4 h-4 ml-auto text-slate-300" />
             </button>
-            <div className="hidden md:block border-t border-slate-200 dark:border-slate-700 my-4"></div>
+            
+            {/* Sair da Conta: visível apenas no mobile (já existe na sidebar do desktop) */}
             <button 
               onClick={handleLogout}
-              className="mt-auto md:mt-0 w-full text-left px-4 py-3.5 md:px-4 md:py-2.5 text-sm md:font-bold rounded-2xl md:rounded-lg transition-all flex items-center shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] md:shadow-none border border-rose-100 md:border-transparent bg-rose-50 md:bg-transparent text-rose-600 dark:text-rose-404 hover:bg-rose-100 md:hover:bg-rose-50 dark:hover:bg-rose-900/30 active:scale-[0.98]">
-              <div className="md:hidden p-2 rounded-xl bg-white text-rose-500 mr-3"><LogOut className="w-4 h-4" /></div>
-              <LogOut className="hidden md:block w-4 h-4 mr-2 opacity-70" /> 
-              <span className="font-bold text-[14px] md:text-sm">Sair da Conta</span>
-              <ChevronRight className="md:hidden w-4 h-4 ml-auto text-rose-300" />
+              className="md:hidden mt-auto w-full text-left px-4 py-3.5 text-sm font-bold rounded-2xl transition-all flex items-center shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] border border-rose-100 bg-rose-50 text-rose-600 dark:text-rose-400 hover:bg-rose-100 active:scale-[0.98]">
+              <div className="p-2 rounded-xl bg-white text-rose-500 mr-3"><LogOut className="w-4 h-4 text-rose-500" /></div>
+              <span className="font-bold text-[14px]">Sair da Conta</span>
+              <ChevronRight className="w-4 h-4 ml-auto text-rose-300" />
             </button>
           </aside>
           
@@ -818,14 +889,29 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
               </div>
             )}
 
-            {activePanel === 'ia' && (
-              <div className="space-y-6 pb-6">
+              {activePanel === 'ia' && (
+              <div className="space-y-6 pb-6 animate-fade-in">
                 <div className="border-b border-slate-100 dark:border-slate-700 pb-4">
                   <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100">Inteligência Artificial</h2>
                   <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">
                     Conecte e gerencie serviços de modelos de IA para automatizar tarefas financeiras no FINCANVAS.
                   </p>
                 </div>
+
+                {/* Banner de Erro/Offline se a API do Backend estiver offline (Fase 2) */}
+                {apiAvailable === false && (
+                  <div className="p-4 bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 rounded-xl flex gap-3 text-rose-800 dark:text-rose-300">
+                    <CloudCog className="w-5 h-5 shrink-0 mt-0.5 animate-pulse text-rose-500" />
+                    <div className="text-xs space-y-1">
+                      <p className="font-bold">⚠️ Conexão de rede indisponível ou API do FINCANVAS Offline.</p>
+                      <p className="leading-relaxed">
+                        Os recursos e configurações de Inteligência Artificial estão temporariamente indisponíveis.
+                        Certifique-se de que o backend local (<code className="bg-rose-100 dark:bg-rose-950 px-1 font-mono rounded">npm run dev</code>) está ativo,
+                        rodando no mesmo ambiente e ouvindo na porta 3000 para reestabelecer o serviço.
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Aviso Principal */}
                 <div className="p-4 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded-xl flex gap-3 text-amber-800 dark:text-amber-300">
@@ -836,20 +922,15 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                 </div>
 
                 {/* Toggle: Ativar recursos de IA */}
-                <div className="flex items-center justify-between p-5 md:p-4 bg-slate-50 dark:bg-slate-700/50 border border-slate-100 dark:border-slate-700 rounded-xl shadow-sm md:shadow-none">
-                  <div className="pr-4">
-                    <p className="text-[15px] md:text-sm font-bold text-slate-800 dark:text-slate-100">Ativar recursos de IA</p>
-                    <p className="text-[13px] md:text-xs text-slate-500 dark:text-slate-404 mt-1 leading-relaxed">
-                      Ligue ou desligue globalmente todos os recursos inteligentes integrados.
-                    </p>
-                  </div>
-                  <button 
-                    onClick={() => handleToggleAI(!aiSettings.aiEnabled)}
-                    disabled={savingAiSettings || loadingStatus}
-                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none shadow-sm ${aiSettings.aiEnabled ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                  >
-                    <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${aiSettings.aiEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
-                  </button>
+                <div className="bg-slate-50 dark:bg-slate-700/50 border border-slate-100 dark:border-slate-700 rounded-xl p-4 shadow-sm md:shadow-none">
+                  <ToggleSwitch
+                    checked={aiSettings.aiEnabled}
+                    onChange={handleToggleAI}
+                    disabled={savingAiSettings || loadingStatus || !apiAvailable}
+                    loading={savingAiSettings}
+                    label="Ativar recursos de IA"
+                    description="Ligue ou desligue globalmente todos os recursos inteligentes integrados."
+                  />
                 </div>
 
                 {/* Se a IA estiver desativada, mostrar o texto */}
@@ -861,7 +942,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                 )}
 
                 {/* Configuração de Provedor e Chaves */}
-                <div className="bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 rounded-xl p-5 md:p-6 space-y-5">
+                <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-5 md:p-6 space-y-5">
                   <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 pb-2 border-b border-slate-100 dark:border-slate-700 uppercase tracking-wider">
                     Conexão de Serviço
                   </h3>
@@ -874,6 +955,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       </label>
                       <select 
                         value={selectedProvider}
+                        disabled={loadingStatus || savingAiSettings || !apiAvailable}
                         onChange={(e) => {
                           const p = e.target.value as AIProvider;
                           setSelectedProvider(p);
@@ -885,7 +967,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                           setBaseUrlInput(config?.defaultBaseUrl || '');
                           setApiKeyInput(''); // Clear on change
                         }}
-                        className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none"
+                        className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none disabled:opacity-50"
                       >
                         <option value="gemini">Google Gemini</option>
                         <option value="openai">OpenAI</option>
@@ -905,9 +987,10 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       <input 
                         type="text"
                         value={selectedModel}
+                        disabled={loadingStatus || savingAiSettings || !apiAvailable}
                         onChange={(e) => setSelectedModel(e.target.value)}
                         placeholder="Nome do modelo, ex: gemini-3.5-flash"
-                        className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none"
+                        className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none disabled:opacity-50"
                       />
                     </div>
                   </div>
@@ -921,13 +1004,14 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       <input 
                         type="url"
                         value={baseUrlInput}
+                        disabled={loadingStatus || savingAiSettings || !apiAvailable}
                         onChange={(e) => setBaseUrlInput(e.target.value)}
                         placeholder={
                           selectedProvider === 'opencode_api' 
                             ? "http://localhost:3000 ou https://seu-servidor.com" 
                             : "https://api.provedor.com/v1"
                         }
-                        className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none"
+                        className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none disabled:opacity-50"
                       />
                       {selectedProvider === 'opencode_api' && (
                         <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5">
@@ -960,9 +1044,10 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <input 
                       type="password"
                       value={apiKeyInput}
+                      disabled={loadingStatus || savingAiSettings || !apiAvailable}
                       onChange={(e) => setApiKeyInput(e.target.value)}
                       placeholder={isCurrentProviderSaved ? `Sua chave ativa está oculta (${maskedKey})` : "Insira a chave de acesso da API"}
-                      className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none font-mono"
+                      className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none font-mono disabled:opacity-50"
                     />
                     
                     {isCurrentProviderSaved && (
@@ -979,38 +1064,44 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       <div className="flex items-center gap-1.5">
                         <span className="relative flex h-2 w-2">
                           <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
-                            !aiSettings.aiEnabled 
-                              ? 'bg-slate-400' 
-                              : !isCurrentProviderSaved && selectedProvider !== 'ollama'
-                                ? 'bg-amber-400'
-                                : testStatus === 'success'
-                                  ? 'bg-emerald-400'
-                                  : testStatus === 'error'
-                                    ? 'bg-rose-400'
-                                    : 'bg-emerald-400'
+                            !apiAvailable
+                              ? 'bg-rose-400'
+                              : !aiSettings.aiEnabled 
+                                ? 'bg-slate-400' 
+                                : !isCurrentProviderSaved && selectedProvider !== 'ollama'
+                                  ? 'bg-amber-400'
+                                  : testStatus === 'success'
+                                    ? 'bg-emerald-400'
+                                    : testStatus === 'error'
+                                      ? 'bg-rose-400'
+                                      : 'bg-emerald-400'
                           }`}></span>
                           <span className={`relative inline-flex rounded-full h-2 w-2 ${
-                            !aiSettings.aiEnabled 
-                              ? 'bg-slate-500' 
-                              : !isCurrentProviderSaved && selectedProvider !== 'ollama'
-                                ? 'bg-amber-500'
-                                : testStatus === 'success'
-                                  ? 'bg-emerald-500'
-                                  : testStatus === 'error'
-                                    ? 'bg-rose-500'
-                                    : 'bg-emerald-500'
+                            !apiAvailable
+                              ? 'bg-rose-500'
+                              : !aiSettings.aiEnabled 
+                                ? 'bg-slate-500' 
+                                : !isCurrentProviderSaved && selectedProvider !== 'ollama'
+                                  ? 'bg-amber-500'
+                                  : testStatus === 'success'
+                                    ? 'bg-emerald-500'
+                                    : testStatus === 'error'
+                                      ? 'bg-rose-100' // non-crash soft indicator
+                                      : 'bg-emerald-500'
                           }`}></span>
                         </span>
                         <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                          {!aiSettings.aiEnabled 
-                            ? 'IA desativada' 
-                            : !isCurrentProviderSaved && selectedProvider !== 'ollama'
-                              ? 'Chave não configurada'
-                              : testStatus === 'success'
-                                ? 'Conexão testada com sucesso'
-                                : testStatus === 'error'
-                                  ? 'Erro ao testar conexão'
-                                  : 'Chave configurada'}
+                          {!apiAvailable
+                            ? 'API Offline / Indisponível'
+                            : !aiSettings.aiEnabled 
+                              ? 'IA desativada' 
+                              : !isCurrentProviderSaved && selectedProvider !== 'ollama'
+                                ? 'Chave não configurada'
+                                : testStatus === 'success'
+                                  ? 'Conexão testada com sucesso'
+                                  : testStatus === 'error'
+                                    ? 'Erro ao testar conexão'
+                                    : 'Chave configurada'}
                         </span>
                       </div>
                     </div>
@@ -1029,7 +1120,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <button
                       type="button"
                       onClick={handleSaveCredential}
-                      disabled={savingAiSettings || loadingStatus}
+                      disabled={savingAiSettings || loadingStatus || !apiAvailable}
                       className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5"
                     >
                       {savingAiSettings ? (
@@ -1045,7 +1136,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <button
                       type="button"
                       onClick={handleTestConnection}
-                      disabled={testingConnection || loadingStatus}
+                      disabled={testingConnection || loadingStatus || !apiAvailable}
                       className="px-4 py-2 bg-white dark:bg-slate-700 hover:bg-slate-50 dark:hover:bg-slate-600 disabled:opacity-50 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600 text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5"
                     >
                       {testingConnection ? (
@@ -1062,8 +1153,8 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       <button
                         type="button"
                         onClick={handleRemoveCredential}
-                        disabled={savingAiSettings || loadingStatus}
-                        className="px-4 py-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/20 dark:hover:bg-rose-900/20 text-rose-650 dark:text-rose-400 text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 ml-auto"
+                        disabled={savingAiSettings || loadingStatus || !apiAvailable}
+                        className="px-4 py-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-955/20 dark:hover:bg-rose-900/20 text-rose-600 dark:text-rose-404 text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 ml-auto"
                       >
                         Remover credencial
                       </button>
@@ -1072,7 +1163,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                 </div>
 
                 {/* Seção de Permissões */}
-                <div className="bg-white dark:bg-slate-80 border border-slate-200 dark:border-slate-700 rounded-xl p-5 md:p-6 space-y-4">
+                <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-5 md:p-6 space-y-4">
                   <div className="border-b border-slate-100 dark:border-slate-700 pb-2">
                     <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wider">
                       Permissões de Integração (Escopos)
@@ -1083,78 +1174,58 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                   </div>
 
                   {/* 1. Usar IA para OCR de recibos/imagens */}
-                  <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/20 border border-slate-100 dark:border-slate-800/80 rounded-lg">
-                    <div>
-                      <p className="text-xs font-bold text-slate-800 dark:text-slate-200">Usar IA para OCR de recibos/imagens</p>
-                      <p className="text-[11px] text-slate-500 mt-0.5 font-sans">Leitura inteligente de cupons fiscais e faturas anexadas.</p>
-                    </div>
-                    <button 
-                      onClick={() => handleTogglePermission('aiUseForOCR', !aiSettings.aiUseForOCR)}
-                      disabled={savingAiSettings || loadingStatus}
-                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none shadow-sm ${aiSettings.aiUseForOCR ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                    >
-                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-240 ease-in-out ${aiSettings.aiUseForOCR ? 'translate-x-4' : 'translate-x-0'}`} />
-                    </button>
+                  <div className="p-3 bg-slate-50 dark:bg-slate-900/20 border border-slate-100 dark:border-slate-800/80 rounded-lg">
+                    <ToggleSwitch
+                      checked={aiSettings.aiUseForOCR}
+                      onChange={(checked) => handleTogglePermission('aiUseForOCR', checked)}
+                      disabled={savingAiSettings || loadingStatus || !apiAvailable || !aiSettings.aiEnabled}
+                      label="Usar IA para OCR de recibos/imagens"
+                      description="Leitura inteligente de cupons fiscais e faturas anexadas."
+                    />
                   </div>
 
                   {/* 2. Usar IA para fallback de categorias incertas */}
-                  <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/20 border border-slate-100 dark:border-slate-800/80 rounded-lg">
-                    <div>
-                      <p className="text-xs font-bold text-slate-800 dark:text-slate-200">Usar IA para fallback de categorias incertas</p>
-                      <p className="text-[11px] text-slate-500 mt-0.5 font-sans font-sans">Sugerir e categorizar transações não identificadas localmente.</p>
-                    </div>
-                    <button 
-                      onClick={() => handleTogglePermission('aiUseForCategoryFallback', !aiSettings.aiUseForCategoryFallback)}
-                      disabled={savingAiSettings || loadingStatus}
-                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none shadow-sm ${aiSettings.aiUseForCategoryFallback ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                    >
-                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-240 ease-in-out ${aiSettings.aiUseForCategoryFallback ? 'translate-x-4' : 'translate-x-0'}`} />
-                    </button>
+                  <div className="p-3 bg-slate-50 dark:bg-slate-900/20 border border-slate-100 dark:border-slate-800/80 rounded-lg">
+                    <ToggleSwitch
+                      checked={aiSettings.aiUseForCategoryFallback}
+                      onChange={(checked) => handleTogglePermission('aiUseForCategoryFallback', checked)}
+                      disabled={savingAiSettings || loadingStatus || !apiAvailable || !aiSettings.aiEnabled}
+                      label="Usar IA para fallback de categorias incertas"
+                      description="Sugerir e categorizar transações não identificadas localmente."
+                    />
                   </div>
 
                   {/* 3. Usar IA para insights no dashboard */}
-                  <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/20 border border-slate-100 dark:border-slate-800/80 rounded-lg">
-                    <div>
-                      <p className="text-xs font-bold text-slate-800 dark:text-slate-200">Usar IA para insights no dashboard</p>
-                      <p className="text-[11px] text-slate-500 mt-0.5 font-sans">Alertas e recomendações comportamentais dinâmicas na tela inicial.</p>
-                    </div>
-                    <button 
-                      onClick={() => handleTogglePermission('aiUseForInsights', !aiSettings.aiUseForInsights)}
-                      disabled={savingAiSettings || loadingStatus}
-                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none shadow-sm ${aiSettings.aiUseForInsights ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                    >
-                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-240 ease-in-out ${aiSettings.aiUseForInsights ? 'translate-x-4' : 'translate-x-0'}`} />
-                    </button>
+                  <div className="p-3 bg-slate-50 dark:bg-slate-900/20 border border-slate-100 dark:border-slate-800/80 rounded-lg">
+                    <ToggleSwitch
+                      checked={aiSettings.aiUseForInsights}
+                      onChange={(checked) => handleTogglePermission('aiUseForInsights', checked)}
+                      disabled={savingAiSettings || loadingStatus || !apiAvailable || !aiSettings.aiEnabled}
+                      label="Usar IA para insights no dashboard"
+                      description="Alertas e recomendações comportamentais dinâmicas na tela inicial."
+                    />
                   </div>
 
                   {/* 4. Usar IA para relatórios/mentoria financeira */}
-                  <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/20 border border-slate-100 dark:border-slate-800/80 rounded-lg">
-                    <div>
-                      <p className="text-xs font-bold text-slate-800 dark:text-slate-200">Usar IA para relatórios/mentoria financeira</p>
-                      <p className="text-[11px] text-slate-500 mt-0.5 font-sans">Elaboração de diagnósticos complexos e mentoria financeira nas análises de histórico.</p>
-                    </div>
-                    <button 
-                      onClick={() => handleTogglePermission('aiUseForReports', !aiSettings.aiUseForReports)}
-                      disabled={savingAiSettings || loadingStatus}
-                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none shadow-sm ${aiSettings.aiUseForReports ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                    >
-                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-240 ease-in-out ${aiSettings.aiUseForReports ? 'translate-x-4' : 'translate-x-0'}`} />
-                    </button>
+                  <div className="p-3 bg-slate-50 dark:bg-slate-900/20 border border-slate-100 dark:border-slate-800/80 rounded-lg">
+                    <ToggleSwitch
+                      checked={aiSettings.aiUseForReports}
+                      onChange={(checked) => handleTogglePermission('aiUseForReports', checked)}
+                      disabled={savingAiSettings || loadingStatus || !apiAvailable || !aiSettings.aiEnabled}
+                      label="Usar IA para relatórios/mentoria financeira"
+                      description="Elaboração de diagnósticos complexos e mentoria financeira nas análises de histórico."
+                    />
                   </div>
 
                   {/* 5. Sempre pedir confirmação antes de enviar dados para IA */}
-                  <div className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/20 border border-slate-100 dark:border-slate-800/80 rounded-lg">
-                    <div>
-                      <p className="text-xs font-bold text-slate-800 dark:text-slate-200">Sempre pedir confirmação antes de enviar dados para IA</p>
-                      <p className="text-[11px] text-slate-500 mt-0.5 font-sans">Exibir aviso de consentimento detalhado antes de cada disparo à API externa.</p>
-                    </div>
-                    <button 
-                      onClick={() => handleTogglePermission('aiAlwaysAskBeforeSending', !aiSettings.aiAlwaysAskBeforeSending)}
-                      disabled={savingAiSettings || loadingStatus}
-                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none shadow-sm ${aiSettings.aiAlwaysAskBeforeSending ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                    >
-                      <span className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-240 ease-in-out ${aiSettings.aiAlwaysAskBeforeSending ? 'translate-x-4' : 'translate-x-0'}`} />
-                    </button>
+                  <div className="p-3 bg-slate-50 dark:bg-slate-900/20 border border-slate-100 dark:border-slate-800/80 rounded-lg">
+                    <ToggleSwitch
+                      checked={aiSettings.aiAlwaysAskBeforeSending}
+                      onChange={(checked) => handleTogglePermission('aiAlwaysAskBeforeSending', checked)}
+                      disabled={savingAiSettings || loadingStatus || !apiAvailable || !aiSettings.aiEnabled}
+                      label="Sempre pedir confirmação antes de enviar dados para IA"
+                      description="Exibir aviso de consentimento detalhado antes de cada disparo à API externa."
+                    />
                   </div>
                 </div>
               </div>
