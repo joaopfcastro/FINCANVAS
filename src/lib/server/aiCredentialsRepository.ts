@@ -1,4 +1,7 @@
+import fs from "fs";
+import path from "path";
 import admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
 import { getDefaultAISettings } from "../ai/providerRegistry";
 
 export interface AISecretData {
@@ -11,12 +14,35 @@ export interface AISecretData {
   updatedAt?: any;
 }
 
+let dbInstance: admin.firestore.Firestore | null = null;
+
+function getDb(): admin.firestore.Firestore {
+  if (dbInstance) return dbInstance;
+
+  let customDbId: string | undefined = undefined;
+  try {
+    const appletConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
+    if (fs.existsSync(appletConfigPath)) {
+      const config = JSON.parse(fs.readFileSync(appletConfigPath, "utf8"));
+      if (config.firestoreDatabaseId) {
+        customDbId = config.firestoreDatabaseId;
+      }
+    }
+  } catch (err: any) {
+    console.warn("[aiCredentialsRepository] Could not read custom databaseId:", err.message);
+  }
+
+  const app = admin.apps[0] || admin.app();
+  dbInstance = customDbId ? getFirestore(app, customDbId) : admin.firestore();
+  return dbInstance;
+}
+
 /**
  * Recovers safe server-side AI Secret config for a user, or null if unconfigured
  */
 export async function getAISecret(uid: string): Promise<AISecretData | null> {
   try {
-    const docRef = admin.firestore().collection("users").doc(uid).collection("secrets").doc("ai");
+    const docRef = getDb().collection("users").doc(uid).collection("secrets").doc("ai");
     const docSnap = await docRef.get();
     if (!docSnap.exists) {
       return null;
@@ -36,7 +62,7 @@ export async function saveAISecret(
   data: Partial<AISecretData>
 ): Promise<AISecretData> {
   try {
-    const docRef = admin.firestore().collection("users").doc(uid).collection("secrets").doc("ai");
+    const docRef = getDb().collection("users").doc(uid).collection("secrets").doc("ai");
     const docSnap = await docRef.get();
     const savedData = docSnap.exists ? docSnap.data() : null;
 
@@ -59,10 +85,10 @@ export async function saveAISecret(
  */
 export async function deleteAISecret(uid: string): Promise<void> {
   try {
-    const secretsRef = admin.firestore().collection("users").doc(uid).collection("secrets").doc("ai");
+    const secretsRef = getDb().collection("users").doc(uid).collection("secrets").doc("ai");
     await secretsRef.delete();
 
-    const settingsRef = admin.firestore().collection("users").doc(uid).collection("settings").doc("ai");
+    const settingsRef = getDb().collection("users").doc(uid).collection("settings").doc("ai");
     const settingsDoc = await settingsRef.get();
     
     let currentSettings = getDefaultAISettings();
@@ -92,7 +118,7 @@ export async function deleteAISecret(uid: string): Promise<void> {
  */
 export async function getAISettings(uid: string): Promise<any> {
   try {
-    const settingsDoc = await admin.firestore().collection("users").doc(uid).collection("settings").doc("ai").get();
+    const settingsDoc = await getDb().collection("users").doc(uid).collection("settings").doc("ai").get();
     if (!settingsDoc.exists) {
       return getDefaultAISettings();
     }
@@ -120,7 +146,7 @@ export async function getAISettings(uid: string): Promise<any> {
  */
 export async function saveAISettings(uid: string, settingsToSave: any): Promise<any> {
   try {
-    const settingsRef = admin.firestore().collection("users").doc(uid).collection("settings").doc("ai");
+    const settingsRef = getDb().collection("users").doc(uid).collection("settings").doc("ai");
     await settingsRef.set({
       ...settingsToSave,
       updatedAt: admin.firestore.FieldValue.serverTimestamp()

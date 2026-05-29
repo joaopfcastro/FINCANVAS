@@ -24,6 +24,7 @@ import { mapToUserCategory } from "./src/lib/recognition/taxonomy/mapToUserCateg
 import { AUTO_ACCEPT, ACCEPT_WITH_BADGE, REVIEW_OR_AI } from "./src/lib/recognition/constants";
 import { RawTransactionInput as NewRawInput, UserRecognitionRule } from "./src/lib/recognition/types";
 import admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
 import fs from "fs";
 import { 
   isValidProvider, 
@@ -92,7 +93,24 @@ function initFirebaseAdmin() {
 }
 
 initFirebaseAdmin();
-const db = admin.firestore();
+
+let customDbId: string | undefined = undefined;
+try {
+  const appletConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
+  if (fs.existsSync(appletConfigPath)) {
+    const config = JSON.parse(fs.readFileSync(appletConfigPath, "utf8"));
+    if (config.firestoreDatabaseId) {
+      customDbId = config.firestoreDatabaseId;
+      console.log(`[Firebase Admin] Using customized databaseId: ${customDbId}`);
+    }
+  }
+} catch (err: any) {
+  console.warn("[Firebase Admin] Could not read custom databaseId from config file:", err.message);
+}
+
+const db = customDbId 
+  ? getFirestore(admin.apps[0] || admin.app(), customDbId) 
+  : admin.firestore();
 
 let lastFirestoreStatus: boolean | null = null;
 let lastFirestoreCheckTime = 0;
@@ -2025,7 +2043,8 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         message: response.text || "Teste concluído de forma bem-sucedida."
       });
     } catch (err: any) {
-      console.error("[POST /api/ai/credentials/test error]:", err.message);
+      const normalized = normalizeAIProviderError(err, provider, model);
+      console.error("[POST /api/ai/credentials/test error]:", normalized.code);
 
       if (err.message === "FIRESTORE_UNAVAILABLE") {
         return res.status(503).json({
@@ -2034,7 +2053,6 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         });
       }
 
-      const normalized = normalizeAIProviderError(err, provider, model);
       return res.json({
         success: false,
         code: normalized.code,
