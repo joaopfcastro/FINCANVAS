@@ -1940,7 +1940,7 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
     const envVal = process.env.AI_PROVIDER_TEST_TIMEOUT_MS;
     if (envVal) {
       const parsed = parseInt(envVal, 10);
-      if (!isNaN(parsed) && parsed > 0) {
+      if (!isNaN(parsed) && parsed >= 3000 && parsed <= 60000) {
         return parsed;
       }
     }

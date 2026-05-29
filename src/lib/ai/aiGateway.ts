@@ -213,28 +213,20 @@ export async function callGemini(options: {
     }
   });
 
-  try {
-    const response = await ai.models.generateContent({
-      model: model || 'gemini-3.5-flash',
-      contents,
-      config: config || undefined
-    });
+  const response = await ai.models.generateContent({
+    model: model || 'gemini-3.5-flash',
+    contents,
+    config: config || undefined
+  });
 
-    const text = extractTextFromGeminiResponse(response);
+  const text = extractTextFromGeminiResponse(response);
 
-    return {
-      text,
-      raw: response,
-      provider: 'gemini',
-      model: model || 'gemini-3.5-flash'
-    };
-  } catch (err: any) {
-    const errMsg = err?.message || String(err);
-    if (errMsg.includes("5 NOT_FOUND") || errMsg.includes("notFound") || errMsg.includes("NOT_FOUND")) {
-      throw new Error(`Chave de API ou recurso não encontrado (Gemini return: 5 NOT_FOUND). Verifique se o modelo selecionado está disponível e se sua API key possui as permissões corretas.`);
-    }
-    throw err;
-  }
+  return {
+    text,
+    raw: response,
+    provider: 'gemini',
+    model: model || 'gemini-3.5-flash'
+  };
 }
 
 export async function callOpenAI(options: {
@@ -714,9 +706,10 @@ export function normalizeAIProviderError(
   }
 
   // 7. Fallback desconhecido
+  console.error(`[normalizeAIProviderError Fallback error]: Provider ${provider} unexpected error`);
   return {
     code: 'AI_UNKNOWN_PROVIDER_ERROR',
-    message: errMsg || 'O provedor de IA retornou um erro inesperado durante o teste.',
+    message: 'O provedor de IA retornou um erro inesperado durante o teste.',
     provider,
     model
   };

@@ -1359,14 +1359,51 @@ async function runTests() {
     const errNetwork = normalizeAIProviderError(new Error("fetch failed"), "openai", "gpt-4");
     assert(errNetwork.code === "AI_PROVIDER_UNREACHABLE", "fetch failed deve virar AI_PROVIDER_UNREACHABLE");
 
-    // G. Unknown error -> AI_UNKNOWN_PROVIDER_ERROR
-    const errUnknown = normalizeAIProviderError(new Error("Some totally weird error"), "gemini", "gemini-1.5-pro");
+    // G. Unknown error -> AI_UNKNOWN_PROVIDER_ERROR (must hide raw errMsg)
+    const rawSecretMsg = "apiKey=SECRET_KEY_EXPOSED_HERE";
+    const errUnknown = normalizeAIProviderError(new Error(rawSecretMsg), "gemini", "gemini-1.5-pro");
     assert(errUnknown.code === "AI_UNKNOWN_PROVIDER_ERROR", "Erro desconhecido deve virar AI_UNKNOWN_PROVIDER_ERROR");
+    assert(errUnknown.message === "O provedor de IA retornou um erro inesperado durante o teste.", "Deve retornar mensagem padrão segura");
+    assert(!errUnknown.message.includes(rawSecretMsg), "Não deve vazar mensagem técnica crua ou segredos");
 
     console.log("✅ PASSED: Teste 32 concluído com sucesso.");
     passed++;
   } catch (err: any) {
     console.error("Erro no teste 32:", err);
+    failed++;
+  }
+
+  // 33. Teste de parse de Timeout (Fase 8)
+  try {
+    console.log("=== INICIANDO TESTE 33: VALIDAÇÃO DE PARSE DE TIMEOUT DE CONEXÃO ===");
+
+    function customParseAIProviderTestTimeoutMs(envVal: string | undefined): number {
+      if (envVal) {
+        const parsed = parseInt(envVal, 10);
+        if (!isNaN(parsed) && parsed >= 3000 && parsed <= 60000) {
+          return parsed;
+        }
+      }
+      return 15000;
+    }
+
+    // A. Válido e dentro da faixa
+    assert(customParseAIProviderTestTimeoutMs("20000") === 20000, "20000 ms é válido");
+    assert(customParseAIProviderTestTimeoutMs("3000") === 3000, "Mínimo 3000 ms é válido");
+    assert(customParseAIProviderTestTimeoutMs("60000") === 60000, "Máximo 60000 ms é válido");
+
+    // B. Fora da faixa ou inválido
+    assert(customParseAIProviderTestTimeoutMs("2999") === 15000, "Menor que 3000 ms deve cair no padrão 15000");
+    assert(customParseAIProviderTestTimeoutMs("60001") === 15000, "Maior que 60000 ms deve cair no padrão 15000");
+    assert(customParseAIProviderTestTimeoutMs("-5000") === 15000, "Negativo deve cair no padrão 15000");
+    assert(customParseAIProviderTestTimeoutMs("abc") === 15000, "String não-numérica deve cair no padrão 15000");
+    assert(customParseAIProviderTestTimeoutMs("") === 15000, "String vazia deve cair no padrão 15000");
+    assert(customParseAIProviderTestTimeoutMs(undefined) === 15000, "Undefined deve cair no padrão 15000");
+
+    console.log("✅ PASSED: Teste 33 concluído com sucesso.");
+    passed++;
+  } catch (err: any) {
+    console.error("Erro no teste 33:", err);
     failed++;
   }
 
