@@ -1001,6 +1001,9 @@ async function runTests() {
       fetchedOpts = opts;
       return {
         ok: true,
+        headers: {
+          get: (name: string) => name.toLowerCase() === 'content-type' ? 'application/json' : null
+        },
         json: async () => ({ text: 'mock AI response' })
       };
     };
@@ -1295,6 +1298,33 @@ async function runTests() {
     console.log("✅ PASSED: PluggySettingsPanel envia pluggyClientSecret exclusivamente em clientSecret");
   } catch (err: any) {
     console.error("Erro no teste 30:", err);
+    failed++;
+  }
+
+  // 31. Teste de Inteligência Artificial multiprovedor robustecido
+  try {
+    console.log("=== INICIANDO TESTE 31: ROBUSTECIMENTO DE IA E CONFIGURAÇÕES ===");
+    
+    // Testar validação robusta
+    const providerRegistryMod = await import('./src/lib/ai/providerRegistry.js');
+    const { validateProviderConnectionConfig } = providerRegistryMod;
+    
+    // Gemini sem chave deve falhar
+    const geminiVal = validateProviderConnectionConfig('gemini', '', '', 'development');
+    assert(geminiVal.isValid === false, "Gemini sem chave de API deve falhar na validação");
+    
+    // Gemini com chave deve passar
+    const geminiValOk = validateProviderConnectionConfig('gemini', '', 'AIzaSyTestKey', 'development');
+    assert(geminiValOk.isValid === true, "Gemini com chave válida deve passar na validação");
+    
+    // OpenAI com chave deve passar
+    const openAiValOk = validateProviderConnectionConfig('openai', '', 'sk-proj-somekey', 'development');
+    assert(openAiValOk.isValid === true, "OpenAI com chave válida deve passar na validação");
+
+    console.log("✅ PASSED: Teste 31 concluído com sucesso.");
+    passed++;
+  } catch (err: any) {
+    console.error("Erro no teste 31:", err);
     failed++;
   }
 

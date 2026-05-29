@@ -213,20 +213,28 @@ export async function callGemini(options: {
     }
   });
 
-  const response = await ai.models.generateContent({
-    model: model || 'gemini-3.5-flash',
-    contents,
-    config: config || undefined
-  });
+  try {
+    const response = await ai.models.generateContent({
+      model: model || 'gemini-3.5-flash',
+      contents,
+      config: config || undefined
+    });
 
-  const text = extractTextFromGeminiResponse(response);
+    const text = extractTextFromGeminiResponse(response);
 
-  return {
-    text,
-    raw: response,
-    provider: 'gemini',
-    model: model || 'gemini-3.5-flash'
-  };
+    return {
+      text,
+      raw: response,
+      provider: 'gemini',
+      model: model || 'gemini-3.5-flash'
+    };
+  } catch (err: any) {
+    const errMsg = err?.message || String(err);
+    if (errMsg.includes("5 NOT_FOUND") || errMsg.includes("notFound") || errMsg.includes("NOT_FOUND")) {
+      throw new Error(`Chave de API ou recurso não encontrado (Gemini return: 5 NOT_FOUND). Verifique se o modelo selecionado está disponível e se sua API key possui as permissões corretas.`);
+    }
+    throw err;
+  }
 }
 
 export async function callOpenAI(options: {

@@ -66,6 +66,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
 
   // State to track if the backend API is online & available
   const [apiAvailable, setApiAvailable] = useState<boolean | null>(null);
+  const [dbStatus, setDbStatus] = useState<'CONNECTED' | 'DISCONNECTED' | 'UNKNOWN'>('UNKNOWN');
 
   // States for AI Settings & credentials
   const [aiSettings, setAiSettings] = useState({
@@ -105,6 +106,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
   const isOllamaLocal = selectedProvider === 'ollama' && isLocalBaseUrl(baseUrlInput || 'http://localhost:11434');
   const isCurrentProviderSaved = isCredentialSaved && (savedProvider === selectedProvider);
   const canEnableAI = isCurrentProviderSaved || isOllamaLocal;
+  const isFormDisabled = loadingStatus || savingAiSettings || !apiAvailable || dbStatus === 'DISCONNECTED';
 
   const isApiKeyRequired = () => {
     if (['gemini', 'openai', 'anthropic', 'openrouter'].includes(selectedProvider)) {
@@ -130,17 +132,25 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
         setLoadingStatus(true);
         
         // 1. Verificar disponibilidade da API (Health check)
-        const healthRes = await apiFetchJson<{ ok: boolean }>('/api/health');
+        const healthRes = await apiFetchJson<{ ok: boolean, database?: string }>('/api/health');
         if (!healthRes.ok) {
-          if (active) {
-            setApiAvailable(false);
-            setLoadingStatus(false);
+          if (healthRes.status === 503 && healthRes.data?.database === "DISCONNECTED") {
+            if (active) {
+              setApiAvailable(true); // server is active, but db is down
+              setDbStatus('DISCONNECTED');
+            }
+          } else {
+            if (active) {
+              setApiAvailable(false);
+              setLoadingStatus(false);
+            }
+            return;
           }
-          return;
-        }
-        
-        if (active) {
-          setApiAvailable(true);
+        } else {
+          if (active) {
+            setApiAvailable(true);
+            setDbStatus('CONNECTED');
+          }
         }
 
         // 2. Carrega credenciais
@@ -913,6 +923,20 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                   </div>
                 )}
 
+                {/* Banner de Banco de Dados Desconectado (Fase 5) */}
+                {dbStatus === 'DISCONNECTED' && (
+                  <div className="p-4 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded-xl flex gap-3 text-amber-800 dark:text-amber-300">
+                    <CloudCog className="w-5 h-5 shrink-0 mt-0.5 animate-pulse text-amber-500" />
+                    <div className="text-xs space-y-1">
+                      <p className="font-bold">⚠️ Banco de dados do Firestore indisponível no momento.</p>
+                      <p className="leading-relaxed">
+                        O servidor FINCANVAS está operacional, mas o banco de dados do Google Firestore não pôde ser contatado.
+                        As chaves e preferências de Inteligência Artificial não podem ser carregadas, salvas ou testadas no momento.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
                 {/* Aviso Principal */}
                 <div className="p-4 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded-xl flex gap-3 text-amber-800 dark:text-amber-300">
                   <Brain className="w-5 h-5 shrink-0 mt-0.5" />
@@ -926,7 +950,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                   <ToggleSwitch
                     checked={aiSettings.aiEnabled}
                     onChange={handleToggleAI}
-                    disabled={savingAiSettings || loadingStatus || !apiAvailable}
+                    disabled={savingAiSettings || loadingStatus || !apiAvailable || dbStatus === 'DISCONNECTED'}
                     loading={savingAiSettings}
                     label="Ativar recursos de IA"
                     description="Ligue ou desligue globalmente todos os recursos inteligentes integrados."
@@ -955,7 +979,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       </label>
                       <select 
                         value={selectedProvider}
-                        disabled={loadingStatus || savingAiSettings || !apiAvailable}
+                        disabled={isFormDisabled}
                         onChange={(e) => {
                           const p = e.target.value as AIProvider;
                           setSelectedProvider(p);
@@ -987,7 +1011,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       <input 
                         type="text"
                         value={selectedModel}
-                        disabled={loadingStatus || savingAiSettings || !apiAvailable}
+                        disabled={isFormDisabled}
                         onChange={(e) => setSelectedModel(e.target.value)}
                         placeholder="Nome do modelo, ex: gemini-3.5-flash"
                         className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none disabled:opacity-50"
@@ -1004,7 +1028,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       <input 
                         type="url"
                         value={baseUrlInput}
-                        disabled={loadingStatus || savingAiSettings || !apiAvailable}
+                        disabled={isFormDisabled}
                         onChange={(e) => setBaseUrlInput(e.target.value)}
                         placeholder={
                           selectedProvider === 'opencode_api' 
@@ -1044,7 +1068,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <input 
                       type="password"
                       value={apiKeyInput}
-                      disabled={loadingStatus || savingAiSettings || !apiAvailable}
+                      disabled={isFormDisabled}
                       onChange={(e) => setApiKeyInput(e.target.value)}
                       placeholder={isCurrentProviderSaved ? `Sua chave ativa está oculta (${maskedKey})` : "Insira a chave de acesso da API"}
                       className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none font-mono disabled:opacity-50"
@@ -1120,7 +1144,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <button
                       type="button"
                       onClick={handleSaveCredential}
-                      disabled={savingAiSettings || loadingStatus || !apiAvailable}
+                      disabled={isFormDisabled}
                       className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5"
                     >
                       {savingAiSettings ? (
@@ -1136,7 +1160,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                     <button
                       type="button"
                       onClick={handleTestConnection}
-                      disabled={testingConnection || loadingStatus || !apiAvailable}
+                      disabled={testingConnection || isFormDisabled}
                       className="px-4 py-2 bg-white dark:bg-slate-700 hover:bg-slate-50 dark:hover:bg-slate-600 disabled:opacity-50 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600 text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5"
                     >
                       {testingConnection ? (
@@ -1153,7 +1177,7 @@ export const SettingsView = React.memo(function SettingsView({ user, profile, tr
                       <button
                         type="button"
                         onClick={handleRemoveCredential}
-                        disabled={savingAiSettings || loadingStatus || !apiAvailable}
+                        disabled={isFormDisabled}
                         className="px-4 py-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-955/20 dark:hover:bg-rose-900/20 text-rose-600 dark:text-rose-404 text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 ml-auto"
                       >
                         Remover credencial

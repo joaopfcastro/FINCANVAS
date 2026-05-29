@@ -35,26 +35,75 @@ import {
   validateProviderConnectionConfig 
 } from "./src/lib/ai/providerRegistry";
 import { generateAIContent } from "./src/lib/ai/aiGateway";
+import {
+  getAISecret,
+  saveAISecret,
+  deleteAISecret,
+  getAISettings,
+  saveAISettings
+} from "./src/lib/server/aiCredentialsRepository";
 
 dotenv.config();
 
-// Read firebase Applet config for Admin SDK initialisation
-const firebaseConfig = JSON.parse(
-  fs.readFileSync(path.join(process.cwd(), "firebase-applet-config.json"), "utf8")
-);
+// Robust source-aware Firebase Admin SDK initialization with multiple credential fallback layers
+function initFirebaseAdmin() {
+  if (admin.apps.length > 0) {
+    return admin.apps[0];
+  }
 
-if (admin.apps.length === 0) {
+  const appOptions: admin.AppOptions = {};
+
   try {
-    admin.initializeApp({
-      projectId: firebaseConfig.projectId,
-    });
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+      try {
+        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+        appOptions.credential = admin.credential.cert(serviceAccount);
+        console.log("[Firebase Admin] Initialized matching FIREBASE_SERVICE_ACCOUNT_JSON configuration.");
+      } catch (jsonErr: any) {
+        console.error("[Firebase Admin Error] FIREBASE_SERVICE_ACCOUNT_JSON parse failed:", jsonErr.message);
+      }
+    }
+
+    if (!appOptions.credential && process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+      if (fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
+        console.log("[Firebase Admin] Detected GOOGLE_APPLICATION_CREDENTIALS. Default SDK logic will handle cert.");
+      }
+    }
+
+    if (!appOptions.credential && !process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+      const appletConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
+      if (fs.existsSync(appletConfigPath)) {
+        const firebaseConfig = JSON.parse(fs.readFileSync(appletConfigPath, "utf8"));
+        appOptions.projectId = firebaseConfig.projectId;
+        console.log(`[Firebase Admin] Initializing with projectId from firebase-applet-config.json: ${firebaseConfig.projectId}.`);
+      }
+    }
+
+    return admin.initializeApp(appOptions);
   } catch (err: any) {
-    console.warn("Firebase Admin failed default initialization. Trying with defaults:", err.message);
-    admin.initializeApp();
+    console.warn("[Firebase Admin] Custom builder fallback triggered due to initialization warning:", err.message);
+    try {
+      return admin.initializeApp();
+    } catch (fallbackErr: any) {
+      console.error("[Firebase Admin Scaffold Error] Absolute initialization failure. Firestore fallback denied.");
+      throw fallbackErr;
+    }
   }
 }
 
+initFirebaseAdmin();
 const db = admin.firestore();
+
+// Light test query to verify connection to Firestore database
+async function checkFirestoreReady(): Promise<boolean> {
+  try {
+    await db.collection("users").limit(1).get();
+    return true;
+  } catch (err: any) {
+    console.error("[Firestore Health Check Failed]:", err.message);
+    return false;
+  }
+}
 
 /**
  * Backend authentication middleware that validates the Authorization Bearer ID Token.
@@ -431,12 +480,18 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
 
   // 0. Health check endpoint
-  app.get("/api/health", (_req, res) => {
-    res.json({
-      ok: true,
+  app.get("/api/health", async (_req, res) => {
+    const firestoreReady = await checkFirestoreReady();
+    const serviceStatus = {
+      ok: firestoreReady,
       service: "FINCANVAS API",
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+      database: firestoreReady ? "CONNECTED" : "DISCONNECTED"
+    };
+    if (!firestoreReady) {
+      return res.status(503).json(serviceStatus);
+    }
+    return res.json(serviceStatus);
   });
 
   // Helper to retrieve and validate Pluggy credentials securely in backend
@@ -1649,10 +1704,8 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       };
     }
 
-    // Load settings
-    const settingsDoc = await db.collection("users").doc(uid).collection("settings").doc("ai").get();
-    const defaults = getDefaultAISettings();
-    const settings = settingsDoc.exists ? { ...defaults, ...settingsDoc.data() } : defaults;
+    // Load settings safely from backend repository
+    const settings = await getAISettings(uid);
 
     if (!settings.aiEnabled) {
       return {
@@ -1687,9 +1740,8 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       };
     }
 
-    // Load secret
-    const secretDoc = await db.collection("users").doc(uid).collection("secrets").doc("ai").get();
-    const secretData = secretDoc.exists ? secretDoc.data() : null;
+    // Load secret safely from repository
+    const secretData = await getAISecret(uid);
 
     const isOllamaLocal = settings.provider === "ollama" && isLocalBaseUrl(settings.baseUrl || "");
 
@@ -1757,21 +1809,26 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       return res.status(result.status).json(result.successResponse);
     } catch (err: any) {
       console.error("[POST /api/ai/generate error]:", err.message);
-      return res.status(500).json({ error: "Erro interno no servidor de IA." });
+      if (err.message === "FIRESTORE_UNAVAILABLE") {
+        return res.status(503).json({ error: "FIRESTORE_UNAVAILABLE", message: "O repositório do Firestore está indisponível." });
+      }
+      return res.status(505).json({ error: "Erro interno no servidor de IA.", details: err.message });
     }
   });
 
-  // --- SECURE MULTI-PROVIDER AI BACKEND ENDPOINTS (FASE 2) ---
+  // --- SECURE MULTI-PROVIDER AI BACKEND ENDPOINTS (FASE 3) ---
 
   // 1. POST /api/ai/credentials/save
   app.post("/api/ai/credentials/save", requireAuth, async (req, res) => {
     const uid = (req as any).user.uid;
     let { provider, apiKey, baseUrl, model } = req.body;
 
+    if (!isValidProvider(provider)) {
+      return res.status(400).json({ error: "Provedor de IA inválido." });
+    }
+
     try {
-      const secretsRef = db.collection("users").doc(uid).collection("secrets").doc("ai");
-      const secretDoc = await secretsRef.get();
-      const savedData = secretDoc.exists ? secretDoc.data() : null;
+      const savedData = await getAISecret(uid);
 
       if (!apiKey && savedData && savedData.provider === provider) {
         apiKey = savedData.apiKey;
@@ -1795,12 +1852,10 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         apiKey: apiKey || "",
         keyMasked,
         baseUrl: baseUrl || "",
-        model: model || getDefaultModel(provider),
-        createdAt: savedData ? (savedData.createdAt || admin.firestore.FieldValue.serverTimestamp()) : admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        model: model || getDefaultModel(provider)
       };
 
-      await secretsRef.set(dataToSave, { merge: true });
+      await saveAISecret(uid, dataToSave);
 
       // Retornar apenas informações não-sensíveis
       return res.json({
@@ -1812,6 +1867,9 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       });
     } catch (err: any) {
       console.error("[POST /api/ai/credentials/save error]:", err.message);
+      if (err.message === "FIRESTORE_UNAVAILABLE") {
+        return res.status(503).json({ error: "FIRESTORE_UNAVAILABLE", message: "O banco de dados Firestore está indisponível." });
+      }
       return res.status(500).json({ error: "Erro interno ao salvar credenciais de IA." });
     }
   });
@@ -1820,22 +1878,16 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
   app.get("/api/ai/credentials/status", requireAuth, async (req, res) => {
     const uid = (req as any).user.uid;
     try {
-      const secretDoc = await db.collection("users").doc(uid).collection("secrets").doc("ai").get();
-      const settingsDoc = await db.collection("users").doc(uid).collection("settings").doc("ai").get();
+      const secretData = await getAISecret(uid);
+      const settings = await getAISettings(uid);
 
-      let settings = getDefaultAISettings();
-      if (settingsDoc.exists) {
-        settings = { ...settings, ...settingsDoc.data() };
-      }
-
-      if (!secretDoc.exists) {
+      if (!secretData) {
         return res.json({
           configured: false,
           settings
         });
       }
 
-      const secretData = secretDoc.data()!;
       return res.json({
         configured: true,
         provider: secretData.provider,
@@ -1846,6 +1898,9 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       });
     } catch (err: any) {
       console.error("[GET /api/ai/credentials/status error]:", err.message);
+      if (err.message === "FIRESTORE_UNAVAILABLE") {
+        return res.status(503).json({ error: "FIRESTORE_UNAVAILABLE", message: "O banco de dados Firestore está indisponível." });
+      }
       return res.status(500).json({ error: "Erro interno ao consultar status de IA." });
     }
   });
@@ -1854,34 +1909,16 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
   app.delete("/api/ai/credentials/delete", requireAuth, async (req, res) => {
     const uid = (req as any).user.uid;
     try {
-      await db.collection("users").doc(uid).collection("secrets").doc("ai").delete();
-
-      const settingsRef = db.collection("users").doc(uid).collection("settings").doc("ai");
-      const settingsDoc = await settingsRef.get();
-      
-      let currentSettings = getDefaultAISettings();
-      if (settingsDoc.exists) {
-        currentSettings = { ...currentSettings, ...settingsDoc.data() };
-      }
-
-      const updatedSettings = {
-        ...currentSettings,
-        aiEnabled: false,
-        aiUseForOCR: false,
-        aiUseForCategoryFallback: false,
-        aiUseForInsights: false,
-        aiUseForReports: false,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
-      };
-
-      await settingsRef.set(updatedSettings, { merge: true });
-
+      await deleteAISecret(uid);
       return res.json({
         success: true,
         message: "Configuração de IA removida com sucesso e IA desativada."
       });
     } catch (err: any) {
       console.error("[DELETE /api/ai/credentials/delete error]:", err.message);
+      if (err.message === "FIRESTORE_UNAVAILABLE") {
+        return res.status(503).json({ error: "FIRESTORE_UNAVAILABLE", message: "O banco de dados Firestore está indisponível." });
+      }
       return res.status(500).json({ error: "Erro interno ao excluir credenciais." });
     }
   });
@@ -1892,8 +1929,7 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
     let { provider, apiKey, baseUrl, model } = req.body;
 
     try {
-      const secretDoc = await db.collection("users").doc(uid).collection("secrets").doc("ai").get();
-      const savedData = secretDoc.exists ? secretDoc.data() : null;
+      const savedData = await getAISecret(uid);
 
       if (!provider) {
         if (!savedData) {
@@ -1925,7 +1961,7 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         });
       }
 
-      // Safe lightweight test using generateAIContent stub or actual code
+      // Safe lightweight test using generating content
       const response = await generateAIContent({
         provider,
         apiKey,
@@ -1944,11 +1980,24 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       });
     } catch (err: any) {
       console.error("[POST /api/ai/credentials/test error]:", err.message);
+      
+      let mappedErr = err.message || String(err);
+      
+      if (mappedErr.includes("5 NOT_FOUND") || mappedErr.includes("notFound") || mappedErr.includes("NOT_FOUND")) {
+        mappedErr = "Chave de API ou recurso não encontrado (Gemini return: 5 NOT_FOUND). Verifique se o modelo selecionado está disponível e se sua API key possui as permissões corretas.";
+      } else if (mappedErr.includes("API_KEY_INVALID") || mappedErr.includes("invalid-key") || mappedErr.includes("INVALID_API_KEY") || mappedErr.includes("API key not valid")) {
+        mappedErr = "Chave de API inválida ou expirada.";
+      }
+
+      if (err.message === "FIRESTORE_UNAVAILABLE") {
+        return res.status(503).json({ error: "FIRESTORE_UNAVAILABLE", message: "O banco de dados Firestore está indisponível para carregar credenciais necessárias para teste." });
+      }
+
       return res.json({
         success: false,
         provider,
         model,
-        message: `Falha na requisição de teste: ${err.message || err}`
+        message: `Falha na requisição de teste: ${mappedErr}`
       });
     }
   });
@@ -1957,26 +2006,13 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
   app.get("/api/ai/settings", requireAuth, async (req, res) => {
     const uid = (req as any).user.uid;
     try {
-      const settingsDoc = await db.collection("users").doc(uid).collection("settings").doc("ai").get();
-      if (!settingsDoc.exists) {
-        return res.json(getDefaultAISettings());
-      }
-      
-      const data = settingsDoc.data() || {};
-      const defaults = getDefaultAISettings();
-      return res.json({
-        aiEnabled: data.aiEnabled ?? defaults.aiEnabled,
-        provider: data.provider ?? defaults.provider,
-        model: data.model ?? defaults.model,
-        baseUrl: data.baseUrl ?? defaults.baseUrl,
-        aiUseForOCR: data.aiUseForOCR ?? defaults.aiUseForOCR,
-        aiUseForCategoryFallback: data.aiUseForCategoryFallback ?? defaults.aiUseForCategoryFallback,
-        aiUseForInsights: data.aiUseForInsights ?? defaults.aiUseForInsights,
-        aiUseForReports: data.aiUseForReports ?? defaults.aiUseForReports,
-        aiAlwaysAskBeforeSending: data.aiAlwaysAskBeforeSending ?? defaults.aiAlwaysAskBeforeSending
-      });
+      const settings = await getAISettings(uid);
+      return res.json(settings);
     } catch (err: any) {
       console.error("[GET /api/ai/settings error]:", err.message);
+      if (err.message === "FIRESTORE_UNAVAILABLE") {
+        return res.status(503).json({ error: "FIRESTORE_UNAVAILABLE", message: "O banco de dados Firestore está indisponível." });
+      }
       return res.status(500).json({ error: "Erro interno ao buscar preferências de IA." });
     }
   });
@@ -2028,8 +2064,7 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       let finalBaseUrl = baseUrl;
 
       if (aiEnabled === true) {
-        const secretDoc = await db.collection("users").doc(uid).collection("secrets").doc("ai").get();
-        const secretData = secretDoc.exists ? secretDoc.data() : null;
+        const secretData = await getAISecret(uid);
 
         const checkBaseUrl = (baseUrl !== undefined ? baseUrl : (secretData?.baseUrl || "")) || "";
         const isOllamaLocal = provider === "ollama" && isLocalBaseUrl(checkBaseUrl);
@@ -2065,8 +2100,6 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         finalBaseUrl = baseUrl || "";
       }
 
-      const settingsRef = db.collection("users").doc(uid).collection("settings").doc("ai");
-      
       const settingsToSave = {
         aiEnabled: !!aiEnabled,
         provider,
@@ -2076,11 +2109,10 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
         aiUseForCategoryFallback: !!aiUseForCategoryFallback,
         aiUseForInsights: !!aiUseForInsights,
         aiUseForReports: !!aiUseForReports,
-        aiAlwaysAskBeforeSending: aiAlwaysAskBeforeSending !== false,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        aiAlwaysAskBeforeSending: aiAlwaysAskBeforeSending !== false
       };
 
-      await settingsRef.set(settingsToSave, { merge: true });
+      await saveAISettings(uid, settingsToSave);
 
       return res.json({
         success: true,
@@ -2088,6 +2120,9 @@ Retorne OBRIGATORIAMENTE um array JSON no formato: [{"pluggyId": "...", "cat": "
       });
     } catch (err: any) {
       console.error("[POST /api/ai/settings error]:", err.message);
+      if (err.message === "FIRESTORE_UNAVAILABLE") {
+        return res.status(503).json({ error: "FIRESTORE_UNAVAILABLE", message: "O banco de dados Firestore está indisponível." });
+      }
       return res.status(500).json({ error: "Erro interno ao atualizar preferências de IA." });
     }
   });
